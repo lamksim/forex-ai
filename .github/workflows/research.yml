@@ -1,6 +1,7 @@
 name: research
 # Downloads Dukascopy data and runs the walk-forward research on it.
-# Runs on GitHub's machines, so no local computer is needed.
+# Manual only (Actions tab > research > Run workflow). Dukascopy currently answers
+# HTTP 503 to GitHub's runners, so this may need a self-hosted runner or a local run.
 on:
   workflow_dispatch:
     inputs:
@@ -13,9 +14,6 @@ on:
       end:
         description: Last day (YYYY-MM-DD)
         default: "2025-10-31"
-  push:
-    branches: [phase-1-research-engine]
-    paths: [".github/workflows/research.yml", "src/forexlab/data.py"]
 jobs:
   research:
     runs-on: ubuntu-latest
