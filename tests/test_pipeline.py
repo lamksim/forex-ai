@@ -206,3 +206,21 @@ def test_download_uses_cache_and_merges_bid_ask(tmp_path, monkeypatch):
     assert (df["ask_close"] - df["bid_close"]).round(6).eq(0.00002).all()
     D.download_dukascopy("EURUSD", date(2024, 1, 1), date(2024, 1, 7), tmp_path, pause=0, verbose=False)
     assert len(calls) == 12  # second run served from cache
+
+
+def test_h1_download_monthly_files(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_fetch(url):
+        calls.append(url)
+        base = 110000 if "BID" in url else 110003
+        rec = np.array([(h * 3600, base, base + 1, base - 1, base + 2, 5.0) for h in range(24 * 3)],
+                       dtype=D._CANDLE_DTYPE)
+        return lzma.compress(rec.tobytes(), format=lzma.FORMAT_ALONE)
+
+    monkeypatch.setattr(D, "_fetch", fake_fetch)
+    df = D.download_dukascopy_h1("EURUSD", date(2024, 1, 2), date(2024, 2, 2), tmp_path, pause=0, verbose=False)
+    assert len(calls) == 4  # Jan + Feb, bid + ask
+    assert calls[0].endswith("/EURUSD/2024/00/BID_candles_hour_1.bi5")
+    assert df.index[0] == pd.Timestamp("2024-01-02", tz="UTC")  # clipped to start
+    assert pd.Timestamp("2024-02-01 05:00", tz="UTC") in df.index  # offsets from month start

@@ -30,11 +30,11 @@ def _costs(args) -> CostModel:
 
 
 def cmd_download(args):
-    df = D.download_dukascopy(args.symbol, date.fromisoformat(args.start), date.fromisoformat(args.end),
-                              Path(args.cache))
-    out = Path(args.out or f"data/{args.symbol}_M1_{args.start}_{args.end}.csv.gz")
+    fn = D.download_dukascopy_h1 if args.bars == "H1" else D.download_dukascopy
+    df = fn(args.symbol, date.fromisoformat(args.start), date.fromisoformat(args.end), Path(args.cache))
+    out = Path(args.out or f"data/{args.symbol}_{args.bars}_{args.start}_{args.end}.csv.gz")
     D.save_bars(df, out)
-    print(f"Saved {len(df):,} M1 bars to {out} (fingerprint {D.fingerprint(df)})")
+    print(f"Saved {len(df):,} {args.bars} bars to {out} (fingerprint {D.fingerprint(df)})")
 
 
 def cmd_synth(args):
@@ -102,6 +102,8 @@ def main(argv=None):
     d.add_argument("--start", required=True)
     d.add_argument("--end", required=True)
     d.add_argument("--cache", default="data/raw")
+    d.add_argument("--bars", choices=["M1", "H1"], default="M1",
+                   help="H1 needs ~25x fewer requests (one file per month); M1 sees spreads minute by minute")
     d.add_argument("--out")
     d.set_defaults(fn=cmd_download)
 

@@ -30,8 +30,12 @@ DUKASCOPY_URL = (
     "https://datafeed.dukascopy.com/datafeed/{symbol}/{y:04d}/{m:02d}/{d:02d}/"
     "{side}_candles_min_1.bi5"
 )
-# Each record in a Dukascopy M1 candle file is 24 bytes, big-endian:
-# seconds-from-midnight, open, close, low, high (int32 scaled by point) and volume (float32).
+# Hourly candles come one file per month (far fewer requests; research runs on H1 anyway).
+DUKASCOPY_H1_URL = (
+    "https://datafeed.dukascopy.com/datafeed/{symbol}/{y:04d}/{m:02d}/{side}_candles_hour_1.bi5"
+)
+# Each record in a Dukascopy candle file is 24 bytes, big-endian:
+# seconds from the start of the file's period (day for M1, month for H1), open, close, low, high (int32 scaled by point) and volume (float32).
 _CANDLE_DTYPE = np.dtype([
     ("t", ">u4"), ("o", ">u4"), ("c", ">u4"), ("l", ">u4"), ("h", ">u4"), ("v", ">f4"),
 ])
@@ -40,7 +44,8 @@ _CANDLE_DTYPE = np.dtype([
 # --------------------------------------------------------------------------- Dukascopy
 
 def parse_candles_bi5(raw: bytes, day: date, point_scale: float) -> pd.DataFrame:
-    """Decode one day's Dukascopy M1 candle file (LZMA-compressed)."""
+    """Decode a Dukascopy candle file (LZMA-compressed). `day` is the start of the
+    file's period: the day for M1 files, the first of the month for H1 files."""
     cols = ["open", "high", "low", "close", "volume"]
     if not raw:
         return pd.DataFrame(columns=cols, index=pd.DatetimeIndex([], tz="UTC"))
@@ -141,6 +146,50 @@ def download_dukascopy(symbol: str, start: date, end: date, cache_dir: Path,
     if not frames:
         raise RuntimeError(f"No data downloaded for {symbol} {start}..{end}")
     return pd.concat(frames)[BAR_COLUMNS].sort_index()
+
+
+def download_dukascopy_h1(symbol: str, start: date, end: date, cache_dir: Path,
+                          pause: float = 3.0, verbose: bool = True) -> pd.DataFrame:
+    """Download H1 bid and ask candles, one file per side per month.
+
+    About 25x fewer requests than M1, which matters because Dukascopy throttles
+    hard. The trade-off: spread is only seen at hourly resolution.
+    """
+    inst = instruments.get(symbol)
+    cache_dir = Path(cache_dir) / inst.symbol / "h1"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    months = []
+    m = date(start.year, start.month, 1)
+    while m <= end:
+        months.append(m)
+        m = date(m.year + (m.month == 12), m.month % 12 + 1, 1)
+    frames = []
+    t0 = time.time()
+    for k, month in enumerate(months, 1):
+        sides = {}
+        for side in ("BID", "ASK"):
+            f = cache_dir / f"{month:%Y-%m}_{side}.bi5"
+            if not f.exists():
+                url = DUKASCOPY_H1_URL.format(symbol=inst.symbol, y=month.year, m=month.month - 1, side=side)
+                raw = _fetch(url)
+                tmp = f.with_suffix(".part")
+                tmp.write_bytes(raw)
+                tmp.rename(f)
+                time.sleep(pause)
+            sides[side] = parse_candles_bi5(f.read_bytes(), month, inst.point_scale)
+        if len(sides["BID"]) and len(sides["ASK"]):
+            merged = sides["BID"].add_prefix("bid_").join(sides["ASK"].add_prefix("ask_"), how="inner")
+            merged["volume"] = merged.pop("bid_volume")
+            merged = merged.drop(columns=["ask_volume"])
+            frames.append(merged[merged["volume"] > 0])
+        if verbose:
+            print(f"  {month:%Y-%m} done ({k}/{len(months)}, {time.time() - t0:.0f}s)", flush=True)
+    if not frames:
+        raise RuntimeError(f"No data downloaded for {symbol} {start}..{end}")
+    df = pd.concat(frames)[BAR_COLUMNS].sort_index()
+    lo = pd.Timestamp(start, tz="UTC")
+    hi = pd.Timestamp(end, tz="UTC") + pd.Timedelta(days=1)
+    return df[(df.index >= lo) & (df.index < hi)]
 
 
 # --------------------------------------------------------------------------- MT5 (optional)
