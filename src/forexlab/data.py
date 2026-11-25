@@ -60,60 +60,84 @@ def parse_candles_bi5(raw: bytes, day: date, point_scale: float) -> pd.DataFrame
     )
 
 
-def _fetch(url: str, retries: int = 4) -> bytes:
+class FetchError(RuntimeError):
+    pass
+
+
+def _fetch(url: str, retries: int = 7) -> bytes:
+    """GET with exponential backoff. Dukascopy answers 503 when it is throttling."""
+    last = None
     for attempt in range(retries):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "forexlab-research"})
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (forexlab research)"})
             with urllib.request.urlopen(req, timeout=30) as resp:
                 return resp.read()
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 return b""
-            if attempt == retries - 1:
-                raise
-        except urllib.error.URLError:
-            if attempt == retries - 1:
-                raise
-        time.sleep(2 ** attempt)
-    return b""
+            last = f"HTTP {exc.code}"
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+            last = str(exc)
+        time.sleep(min(2 ** attempt, 60))
+    raise FetchError(f"{url}: gave up after {retries} tries ({last})")
 
 
 def download_dukascopy(symbol: str, start: date, end: date, cache_dir: Path,
-                       pause: float = 0.05, verbose: bool = True) -> pd.DataFrame:
+                       batch_size: int = 8, pause: float = 1.0, verbose: bool = True) -> pd.DataFrame:
     """Download M1 bid and ask candles for [start, end] and merge them.
 
-    Raw files are cached under cache_dir, so a re-run only downloads missing days.
+    Files are fetched in small concurrent batches with a pause between batches
+    (the pacing the community Dukascopy clients use) and cached under cache_dir,
+    so a re-run, or a run after a failure, only downloads missing days.
     Note: Dukascopy's month in the URL is zero-based (January = 00).
     """
+    from concurrent.futures import ThreadPoolExecutor
+
     inst = instruments.get(symbol)
     cache_dir = Path(cache_dir) / inst.symbol
     cache_dir.mkdir(parents=True, exist_ok=True)
+    days = []
+    d = start
+    while d <= end:
+        if d.weekday() != 5:  # Saturday has no FX trading
+            days.append(d)
+        d += timedelta(days=1)
+
+    def path(day, side):
+        return cache_dir / f"{day.isoformat()}_{side}.bi5"
+
+    todo = [(day, side) for day in days for side in ("BID", "ASK") if not path(day, side).exists()]
+    if verbose:
+        print(f"{inst.symbol}: {len(days)} days, {len(todo)} files to download "
+              f"({2 * len(days) - len(todo)} cached)", flush=True)
+
+    def get(job):
+        day, side = job
+        url = DUKASCOPY_URL.format(symbol=inst.symbol, y=day.year, m=day.month - 1, d=day.day, side=side)
+        raw = _fetch(url)
+        tmp = path(day, side).with_suffix(".part")
+        tmp.write_bytes(raw)
+        tmp.rename(path(day, side))  # only complete files land in the cache
+        return len(raw)
+
+    t0 = time.time()
+    with ThreadPoolExecutor(max_workers=batch_size) as pool:
+        for i in range(0, len(todo), batch_size):
+            list(pool.map(get, todo[i:i + batch_size]))
+            done = min(i + batch_size, len(todo))
+            if verbose and ((done // batch_size) % 25 == 0 or done == len(todo)):
+                print(f"  {done}/{len(todo)} files, {time.time() - t0:.0f}s, at {todo[done - 1][0]}", flush=True)
+            time.sleep(pause)
+
     frames = []
-    day = start
-    while day <= end:
-        if day.weekday() != 5:  # Saturday has no FX trading
-            sides = {}
-            for side in ("BID", "ASK"):
-                f = cache_dir / f"{day.isoformat()}_{side}.bi5"
-                if f.exists():
-                    raw = f.read_bytes()
-                else:
-                    url = DUKASCOPY_URL.format(symbol=inst.symbol, y=day.year,
-                                               m=day.month - 1, d=day.day, side=side)
-                    raw = _fetch(url)
-                    f.write_bytes(raw)
-                    time.sleep(pause)
-                sides[side] = parse_candles_bi5(raw, day, inst.point_scale)
-            if len(sides["BID"]) and len(sides["ASK"]):
-                b = sides["BID"].add_prefix("bid_")
-                a = sides["ASK"].add_prefix("ask_")
-                merged = b.join(a, how="inner")
-                merged["volume"] = merged.pop("bid_volume")
-                merged = merged.drop(columns=["ask_volume"])
-                frames.append(merged[merged["volume"] > 0])
-            if verbose and day.day == 1:
-                print(f"  {inst.symbol} {day:%Y-%m} ...", flush=True)
-        day += timedelta(days=1)
+    for day in days:
+        b = parse_candles_bi5(path(day, "BID").read_bytes(), day, inst.point_scale)
+        a = parse_candles_bi5(path(day, "ASK").read_bytes(), day, inst.point_scale)
+        if len(b) and len(a):
+            merged = b.add_prefix("bid_").join(a.add_prefix("ask_"), how="inner")
+            merged["volume"] = merged.pop("bid_volume")
+            merged = merged.drop(columns=["ask_volume"])
+            frames.append(merged[merged["volume"] > 0])
     if not frames:
         raise RuntimeError(f"No data downloaded for {symbol} {start}..{end}")
     return pd.concat(frames)[BAR_COLUMNS].sort_index()

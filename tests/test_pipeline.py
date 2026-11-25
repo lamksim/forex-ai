@@ -187,3 +187,22 @@ def test_research_logs_every_trial_and_rejects_noise(tmp_path):
     assert r.deflated["n_trials"] == n_cfg
     assert not r.passed  # random walk: there is no edge to find
     assert r.report_path.exists()
+
+
+def test_download_uses_cache_and_merges_bid_ask(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_fetch(url):
+        calls.append(url)
+        base = 110000 if "BID" in url else 110002
+        rec = np.array([(m * 60, base, base + 1, base - 1, base + 2, 1.0) for m in range(3)],
+                       dtype=D._CANDLE_DTYPE)
+        return lzma.compress(rec.tobytes(), format=lzma.FORMAT_ALONE)
+
+    monkeypatch.setattr(D, "_fetch", fake_fetch)
+    df = D.download_dukascopy("EURUSD", date(2024, 1, 1), date(2024, 1, 7), tmp_path, pause=0, verbose=False)
+    assert len(calls) == 12  # 6 trading days (Saturday skipped) x bid/ask
+    assert "/2024/00/01/" in calls[0]  # zero-based month
+    assert (df["ask_close"] - df["bid_close"]).round(6).eq(0.00002).all()
+    D.download_dukascopy("EURUSD", date(2024, 1, 1), date(2024, 1, 7), tmp_path, pause=0, verbose=False)
+    assert len(calls) == 12  # second run served from cache

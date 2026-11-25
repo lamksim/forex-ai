@@ -15,7 +15,7 @@ on:
         default: "2025-10-31"
   push:
     branches: [phase-1-research-engine]
-    paths: [".github/workflows/research.yml"]
+    paths: [".github/workflows/research.yml", "src/forexlab/data.py"]
 jobs:
   research:
     runs-on: ubuntu-latest
@@ -30,14 +30,20 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -e .
-      - name: Cache raw Dukascopy files
-        uses: actions/cache@v4
+      - name: Restore cached Dukascopy files
+        uses: actions/cache/restore@v4
         with:
           path: data/raw
-          key: dukascopy-${{ env.SYMBOL }}-${{ env.START }}-${{ env.END }}
+          key: dukascopy-${{ env.SYMBOL }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: dukascopy-${{ env.SYMBOL }}-
       - name: Download
         run: python -m forexlab download --symbol "$SYMBOL" --start "$START" --end "$END"
+      - name: Save downloaded files (even after a failure, so a re-run resumes)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/raw
+          key: dukascopy-${{ env.SYMBOL }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Research
         run: |
           python -m forexlab research --symbol "$SYMBOL" --data "data/${SYMBOL}_M1_${START}_${END}.csv.gz" | tee research_output.txt
