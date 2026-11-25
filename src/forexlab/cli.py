@@ -39,7 +39,7 @@ def cmd_download(args):
 
 
 def cmd_mt5(args):
-    df = D.load_mt5(args.symbol, args.start, args.end, args.timeframe, args.mt5_symbol, args.utc_offset)
+    df = D.load_mt5(args.symbol, args.start, args.end, args.timeframe, args.mt5_symbol, args.utc_offset, args.mt5_path)
     out = Path(args.out or f"data/{args.symbol}_{args.timeframe}_MT5_{args.start}_{args.end}.csv.gz")
     D.save_bars(df, out)
     sp = (df["ask_close"] - df["bid_close"]) / instruments.get(args.symbol).pip
@@ -123,6 +123,7 @@ def main(argv=None):
     m.add_argument("--start", required=True)
     m.add_argument("--end", required=True)
     m.add_argument("--timeframe", default="H1", choices=["M1", "M5", "M15", "H1"])
+    m.add_argument("--mt5-path", help=r"Path to terminal64.exe, e.g. C:\Program Files\MetaTrader 5\terminal64.exe")
     m.add_argument("--utc-offset", type=float, help="Broker server time minus UTC, in hours (auto-detected if omitted)")
     m.add_argument("--out")
     m.set_defaults(fn=cmd_mt5)

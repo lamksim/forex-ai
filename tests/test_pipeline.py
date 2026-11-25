@@ -244,7 +244,7 @@ def test_load_mt5_builds_ask_from_spread(monkeypatch):
                      dtype=[("time", "<i8"), ("open", "<f8"), ("high", "<f8"), ("low", "<f8"), ("close", "<f8"),
                             ("tick_volume", "<u8"), ("spread", "<i4"), ("real_volume", "<u8")])
     fake = types.SimpleNamespace(
-        initialize=lambda: True, shutdown=lambda: None, last_error=lambda: None,
+        initialize=lambda **kw: True, shutdown=lambda: None, last_error=lambda: None,
         symbol_select=lambda name, on: name == "EURUSD.m",
         symbol_info=lambda name: types.SimpleNamespace(point=0.00001),
         TIMEFRAME_H1=16385, copy_rates_range=lambda *a: rates)

@@ -195,7 +195,7 @@ def download_dukascopy_h1(symbol: str, start: date, end: date, cache_dir: Path,
 # --------------------------------------------------------------------------- MT5 (optional)
 
 def load_mt5(symbol: str, start, end, timeframe: str = "H1", broker_symbol: str | None = None,
-             utc_offset_hours: float | None = None) -> pd.DataFrame:
+             utc_offset_hours: float | None = None, terminal_path: str | None = None) -> pd.DataFrame:
     """Load bars from a running MetaTrader 5 terminal (Windows only).
 
     MT5 gives bid OHLC plus the broker's spread in points at each bar; the ask
@@ -211,7 +211,8 @@ def load_mt5(symbol: str, start, end, timeframe: str = "H1", broker_symbol: str 
 
     instruments.get(symbol)  # only approved pairs
     name = broker_symbol or symbol.upper()
-    if not mt5.initialize():
+    ok = mt5.initialize(path=terminal_path, timeout=120_000) if terminal_path else mt5.initialize(timeout=120_000)
+    if not ok:
         raise RuntimeError(f"MT5 initialize failed: {mt5.last_error()}. Is the terminal open and logged in?")
     try:
         if not mt5.symbol_select(name, True):
