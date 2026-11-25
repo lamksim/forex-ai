@@ -224,3 +224,15 @@ def test_h1_download_monthly_files(tmp_path, monkeypatch):
     assert calls[0].endswith("/EURUSD/2024/00/BID_candles_hour_1.bi5")
     assert df.index[0] == pd.Timestamp("2024-01-02", tz="UTC")  # clipped to start
     assert pd.Timestamp("2024-02-01 05:00", tz="UTC") in df.index  # offsets from month start
+
+
+def test_ex_overlap_is_flat_during_overlap(bars):
+    sig, _ = generate("rsi_reversion_ex_overlap", bars, {"period": 7, "band": 20, "stop_atr": 2.5})
+    res = run_backtest(bars, sig, generate("rsi_reversion", bars, {"period": 7, "band": 20, "stop_atr": 2.5})[1],
+                       "EURUSD", costs=CostModel(0, 0, 0))
+    assert len(res.trades)
+    held = []
+    for _, t in res.trades.iterrows():
+        in_trade = bars.index[(bars.index >= t["entry_time"]) & (bars.index < t["exit_time"])]
+        held += list(in_trade.hour)
+    assert not any(12 <= h < 16 for h in held)

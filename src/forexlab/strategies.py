@@ -69,6 +69,18 @@ def rsi_reversion(df: pd.DataFrame, period: int, band: int, stop_atr: float) -> 
     return signal.astype(int), stop_atr * atr(df)
 
 
+def rsi_reversion_ex_overlap(df: pd.DataFrame, period: int, band: int, stop_atr: float) -> tuple[pd.Series, pd.Series]:
+    """RSI reversion, but flat during the London/New York overlap (12:00-16:00 UTC).
+
+    A signal at bar t trades at bar t+1's open, so forcing the signal to 0 on bars
+    starting 11:00-14:00 keeps the position flat from the 12:00 open to the 16:00 open.
+    """
+    signal, stop = rsi_reversion(df, period, band, stop_atr)
+    hours = df.index.hour
+    signal = signal.where(~((hours >= 11) & (hours <= 14)), 0)
+    return signal.astype(int), stop
+
+
 @dataclass(frozen=True)
 class Family:
     name: str
@@ -102,6 +114,13 @@ FAMILIES: dict[str, Family] = {
         "rsi_reversion", rsi_reversion,
         {"period": [7, 14], "band": [20, 25], "stop_atr": [1.5, 2.5]},
         "Short-term H1 overextension in majors mean-reverts within a day.",
+    ),
+    "rsi_reversion_ex_overlap": Family(
+        "rsi_reversion_ex_overlap", rsi_reversion_ex_overlap,
+        {"period": [7, 14], "band": [20, 25], "stop_atr": [2.5]},
+        "RSI mean reversion works outside the London/New York overlap, when news-driven flow "
+        "is weaker. (Suggested by the first EURUSD run's session breakdown, so EURUSD results "
+        "are partly in-sample; GBPUSD and USDJPY are the cleaner test.)",
     ),
 }
 
