@@ -8,6 +8,7 @@ from datetime import date
 from pathlib import Path
 
 from . import data as D
+from . import instruments
 from .backtest import CostModel
 from .registry import ExperimentLog
 from .research import holdout_evaluation, research
@@ -35,6 +36,15 @@ def cmd_download(args):
     out = Path(args.out or f"data/{args.symbol}_{args.bars}_{args.start}_{args.end}.csv.gz")
     D.save_bars(df, out)
     print(f"Saved {len(df):,} {args.bars} bars to {out} (fingerprint {D.fingerprint(df)})")
+
+
+def cmd_mt5(args):
+    df = D.load_mt5(args.symbol, args.start, args.end, args.timeframe, args.mt5_symbol, args.utc_offset)
+    out = Path(args.out or f"data/{args.symbol}_{args.timeframe}_MT5_{args.start}_{args.end}.csv.gz")
+    D.save_bars(df, out)
+    sp = (df["ask_close"] - df["bid_close"]) / instruments.get(args.symbol).pip
+    print(f"Saved {len(df):,} {args.timeframe} bars {df.index[0]} .. {df.index[-1]} to {out}; "
+          f"median spread {sp.median():.2f} pips, p95 {sp.quantile(0.95):.2f}")
 
 
 def cmd_synth(args):
@@ -106,6 +116,16 @@ def main(argv=None):
                    help="H1 needs ~25x fewer requests (one file per month); M1 sees spreads minute by minute")
     d.add_argument("--out")
     d.set_defaults(fn=cmd_download)
+
+    m = sub.add_parser("mt5", help="Export bars from a running, logged-in MetaTrader 5 terminal (Windows)")
+    m.add_argument("--symbol", default="EURUSD")
+    m.add_argument("--mt5-symbol", help="Broker's name for the pair if it has a suffix, e.g. EURUSD.m")
+    m.add_argument("--start", required=True)
+    m.add_argument("--end", required=True)
+    m.add_argument("--timeframe", default="H1", choices=["M1", "M5", "M15", "H1"])
+    m.add_argument("--utc-offset", type=float, help="Broker server time minus UTC, in hours (auto-detected if omitted)")
+    m.add_argument("--out")
+    m.set_defaults(fn=cmd_mt5)
 
     s = sub.add_parser("synth", help="Write a no-edge synthetic dataset for smoke tests")
     s.add_argument("--symbol", default="EURUSD")

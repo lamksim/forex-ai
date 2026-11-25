@@ -236,3 +236,22 @@ def test_ex_overlap_is_flat_during_overlap(bars):
         in_trade = bars.index[(bars.index >= t["entry_time"]) & (bars.index < t["exit_time"])]
         held += list(in_trade.hour)
     assert not any(12 <= h < 16 for h in held)
+
+
+def test_load_mt5_builds_ask_from_spread(monkeypatch):
+    import sys, types
+    rates = np.array([(1704153600 + 3600 * i, 1.1, 1.1005, 1.0995, 1.1001, 100, 12, 0) for i in range(3)],
+                     dtype=[("time", "<i8"), ("open", "<f8"), ("high", "<f8"), ("low", "<f8"), ("close", "<f8"),
+                            ("tick_volume", "<u8"), ("spread", "<i4"), ("real_volume", "<u8")])
+    fake = types.SimpleNamespace(
+        initialize=lambda: True, shutdown=lambda: None, last_error=lambda: None,
+        symbol_select=lambda name, on: name == "EURUSD.m",
+        symbol_info=lambda name: types.SimpleNamespace(point=0.00001),
+        TIMEFRAME_H1=16385, copy_rates_range=lambda *a: rates)
+    monkeypatch.setitem(sys.modules, "MetaTrader5", fake)
+    df = D.load_mt5("EURUSD", "2024-01-02", "2024-01-03", "H1", broker_symbol="EURUSD.m", utc_offset_hours=0)
+    assert list(df.columns) == D.BAR_COLUMNS
+    assert (df["ask_close"] - df["bid_close"]).round(6).eq(0.00012).all()  # 12 points = 1.2 pips
+    assert str(df.index[0]) == "2024-01-02 00:00:00+00:00"
+    shifted = D.load_mt5("EURUSD", "2024-01-02", "2024-01-03", "H1", broker_symbol="EURUSD.m", utc_offset_hours=2)
+    assert str(shifted.index[0]) == "2024-01-01 22:00:00+00:00"  # server UTC+2 -> UTC

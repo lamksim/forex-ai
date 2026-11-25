@@ -194,27 +194,49 @@ def download_dukascopy_h1(symbol: str, start: date, end: date, cache_dir: Path,
 
 # --------------------------------------------------------------------------- MT5 (optional)
 
-def load_mt5(symbol: str, start, end, timeframe: str = "M1") -> pd.DataFrame:
+def load_mt5(symbol: str, start, end, timeframe: str = "H1", broker_symbol: str | None = None,
+             utc_offset_hours: float | None = None) -> pd.DataFrame:
     """Load bars from a running MetaTrader 5 terminal (Windows only).
 
-    MT5 gives bid OHLC plus the spread in points at bar open; the ask side is
-    reconstructed as bid + spread. That under-states intrabar spread widening,
-    so Dukascopy bid/ask candles are preferred for research.
+    MT5 gives bid OHLC plus the broker's spread in points at each bar; the ask
+    side is reconstructed as bid + spread. That understates intrabar spread
+    widening a little, but the spread is your broker's own.
+    `broker_symbol` covers brokers that add a suffix (e.g. "EURUSD.m").
+    MT5 bar times are in the broker's server time (often UTC+2/+3), not UTC.
+    The offset is detected from the latest tick when the market is open, or
+    can be given as `utc_offset_hours`. A fixed offset ignores the broker's
+    summer-time switch, so session statistics can be off by an hour for part of the year.
     """
     import MetaTrader5 as mt5  # type: ignore  # optional dependency
 
-    inst = instruments.get(symbol)
+    instruments.get(symbol)  # only approved pairs
+    name = broker_symbol or symbol.upper()
     if not mt5.initialize():
-        raise RuntimeError(f"MT5 initialize failed: {mt5.last_error()}")
+        raise RuntimeError(f"MT5 initialize failed: {mt5.last_error()}. Is the terminal open and logged in?")
     try:
+        if not mt5.symbol_select(name, True):
+            raise RuntimeError(f"Symbol {name} not available in this MT5 account. "
+                               "Check Market Watch for the exact name and pass --mt5-symbol.")
+        point = mt5.symbol_info(name).point
+        if utc_offset_hours is None:
+            tick = mt5.symbol_info_tick(name)
+            lag = tick.time - time.time() if tick else None
+            if lag is None or abs(lag - round(lag / 3600) * 3600) > 600:
+                raise RuntimeError("Cannot detect the broker's server-time offset (market closed?). "
+                                   "Pass --utc-offset, e.g. 2 for a UTC+2 server.")
+            utc_offset_hours = round(lag / 3600)
         tf = getattr(mt5, f"TIMEFRAME_{timeframe}")
-        rates = mt5.copy_rates_range(inst.symbol, tf, pd.Timestamp(start).to_pydatetime(),
+        rates = mt5.copy_rates_range(name, tf, pd.Timestamp(start).to_pydatetime(),
                                      pd.Timestamp(end).to_pydatetime())
     finally:
         mt5.shutdown()
+    if rates is None or len(rates) == 0:
+        raise RuntimeError(f"MT5 returned no {timeframe} bars for {name}. Scroll the chart back "
+                           "or raise Tools > Options > Charts > Max bars, then retry.")
     df = pd.DataFrame(rates)
-    df.index = pd.to_datetime(df["time"], unit="s", utc=True).rename("time")
-    spread = df["spread"] / inst.point_scale
+    df.index = (pd.to_datetime(df["time"], unit="s", utc=True)
+                - pd.Timedelta(hours=utc_offset_hours)).rename("time")
+    spread = df["spread"] * point
     out = pd.DataFrame(index=df.index)
     for k in ("open", "high", "low", "close"):
         out[f"bid_{k}"] = df[k]
