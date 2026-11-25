@@ -79,7 +79,7 @@ def _fetch(url: str, retries: int = 4) -> bytes:
 
 
 def download_dukascopy(symbol: str, start: date, end: date, cache_dir: Path,
-                       pause: float = 0.2, verbose: bool = True) -> pd.DataFrame:
+                       pause: float = 0.05, verbose: bool = True) -> pd.DataFrame:
     """Download M1 bid and ask candles for [start, end] and merge them.
 
     Raw files are cached under cache_dir, so a re-run only downloads missing days.
