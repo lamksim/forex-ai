@@ -27,7 +27,34 @@ def _load(args) -> tuple:
 
 def _costs(args) -> CostModel:
     return CostModel(commission_per_100k_side=args.commission, slippage_pips=args.slippage,
-                     min_spread_pips=args.min_spread)
+                     min_spread_pips=args.min_spread, swap_long_pips=args.swap_long,
+                     swap_short_pips=args.swap_short)
+
+
+def cmd_portfolio(args):
+    from .research import research_portfolio
+    log = ExperimentLog(Path(args.log))
+    if len(args.data) != len(args.symbols):
+        raise SystemExit("Give one --data file per --symbols entry, in the same order.")
+    swaps = dict(x.split("=", 1) for x in args.swaps) if args.swaps else {}
+    for fam in args.family or list(FAMILIES):
+        results = []
+        for sym, path in zip(args.symbols, args.data):
+            bars = D.load_bars(path)
+            if args.timeframe:
+                bars = D.resample(bars, args.timeframe)
+            fp = D.fingerprint(bars)
+            rb, hs = split_holdout(bars, args.holdout_frac)
+            sl, ss = (float(x) for x in swaps[sym].split(":")) if sym in swaps else (0.0, 0.0)
+            costs = CostModel(args.commission, args.slippage, args.min_spread, sl, ss)
+            results.append(research(rb, sym, fam, fp, log, costs, args.train_months, args.test_months,
+                                    report_dir=Path(args.reports)))
+        pr = research_portfolio(results, log)
+        m = pr.metrics
+        pairs = "  ".join(f"{k} {v['sharpe']:+.2f}" for k, v in pr.per_symbol.items())
+        print(f"{fam:24s} PORTFOLIO sharpe {m['sharpe']:+.2f}  return {m['total_return']:+.2%}  "
+              f"maxDD {m['max_drawdown']:.2%}  trades {m['trades']:4d}  DSR {pr.deflated['dsr']:.3f} "
+              f"(N={pr.deflated['n_trials']})  {'PASS' if pr.passed else 'reject'}  | {pairs}")
 
 
 def cmd_download(args):
@@ -45,6 +72,9 @@ def cmd_mt5(args):
     sp = (df["ask_close"] - df["bid_close"]) / instruments.get(args.symbol).pip
     print(f"Saved {len(df):,} {args.timeframe} bars {df.index[0]} .. {df.index[-1]} to {out}; "
           f"median spread {sp.median():.2f} pips, p95 {sp.quantile(0.95):.2f}")
+    if df.attrs.get("swap"):
+        print(f"Current broker swap for {args.symbol}: {df.attrs['swap']} "
+              "(today's rates only; use as an approximation via --swap-long/--swap-short)")
 
 
 def cmd_synth(args):
@@ -146,6 +176,8 @@ def main(argv=None):
         r.add_argument("--commission", type=float, default=3.5, help="USD per 100k per side")
         r.add_argument("--slippage", type=float, default=0.2, help="pips per fill")
         r.add_argument("--min-spread", type=float, default=0.0, help="spread floor in pips")
+        r.add_argument("--swap-long", type=float, default=0.0, help="pips per night for longs (negative = cost)")
+        r.add_argument("--swap-short", type=float, default=0.0, help="pips per night for shorts (negative = cost)")
         r.add_argument("--log", default="research_log/experiments.jsonl")
         r.set_defaults(fn=fn)
     rp = sub.choices["research"]
@@ -160,6 +192,22 @@ def main(argv=None):
     hp.add_argument("--versions", default="strategy_versions")
     hp.add_argument("--force-failed", action="store_true",
                     help="Look anyway (logged; burns the holdout for this config)")
+
+    pf = sub.add_parser("portfolio", help="Walk-forward each pair, then judge the 3-pair portfolio")
+    pf.add_argument("--symbols", nargs="+", default=["EURUSD", "GBPUSD", "USDJPY"])
+    pf.add_argument("--data", nargs="+", required=True, help="One bar file per symbol, same order")
+    pf.add_argument("--swaps", nargs="*", help="Per pair long:short swap pips per night, e.g. EURUSD=-0.9:0.2 USDJPY=1.1:-2.0")
+    pf.add_argument("--family", action="append", choices=list(FAMILIES))
+    pf.add_argument("--timeframe", default="1h")
+    pf.add_argument("--holdout-frac", type=float, default=0.2)
+    pf.add_argument("--commission", type=float, default=3.5)
+    pf.add_argument("--slippage", type=float, default=0.2)
+    pf.add_argument("--min-spread", type=float, default=0.3)
+    pf.add_argument("--train-months", type=int, default=24)
+    pf.add_argument("--test-months", type=int, default=6)
+    pf.add_argument("--reports", default="research_log/reports")
+    pf.add_argument("--log", default="research_log/experiments.jsonl")
+    pf.set_defaults(fn=cmd_portfolio)
 
     t = sub.add_parser("trials", help="How many configurations have been tried")
     t.add_argument("--symbol", default="EURUSD")

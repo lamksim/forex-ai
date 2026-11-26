@@ -27,10 +27,15 @@ class CostModel:
     commission_per_100k_side: float = 3.5   # USD, typical ECN account (7 USD round turn)
     slippage_pips: float = 0.2              # per fill, against us
     min_spread_pips: float = 0.0            # floor applied to the data's spread
+    # Overnight financing per night held, in pips (MT5 convention: negative = you pay).
+    # Charged when a position is open through the 21:00 UTC rollover, triple on Wednesdays.
+    swap_long_pips: float = 0.0
+    swap_short_pips: float = 0.0
 
     def describe(self) -> dict:
         return {"commission_per_100k_side": self.commission_per_100k_side,
-                "slippage_pips": self.slippage_pips, "min_spread_pips": self.min_spread_pips}
+                "slippage_pips": self.slippage_pips, "min_spread_pips": self.min_spread_pips,
+                "swap_long_pips": self.swap_long_pips, "swap_short_pips": self.swap_short_pips}
 
 
 @dataclass
@@ -91,12 +96,14 @@ def run_backtest(bars: pd.DataFrame, signal: pd.Series, stop: pd.Series, symbol:
         pnl = inst.to_usd(pnl_quote, price)
         comm = commission(pos["units"], price)
         cash += pnl - comm
+        swap = pos["swap"]  # already in cash
         spread_cost = pos["spread_cost"] + inst.to_usd(spread_now / 2 * pos["units"], price)
         trades.append({
             "entry_time": idx[pos["i"]], "exit_time": idx[i], "direction": pos["dir"],
             "entry": pos["entry"], "exit": price, "units": pos["units"],
-            "pnl_usd": pnl - comm - pos["commission"],
-            "gross_mid_pnl_usd": pnl - comm - pos["commission"] + spread_cost
+            "pnl_usd": pnl - comm - pos["commission"] + swap,
+            "swap_usd": swap,
+            "gross_mid_pnl_usd": pnl - comm - pos["commission"] + swap + spread_cost
                                  + inst.to_usd(2 * slip * pos["units"], price),
             "commission_usd": comm + pos["commission"], "spread_cost_usd": spread_cost,
             "exit_reason": reason, "session": session_of(idx[pos["i"]]),
@@ -124,8 +131,16 @@ def run_backtest(bars: pd.DataFrame, signal: pd.Series, stop: pd.Series, symbol:
                 c = commission(units, entry)
                 cash -= c
                 pos = {"dir": want, "units": units, "entry": entry,
-                       "stop": entry - want * stp[i - 1], "i": i, "commission": c,
+                       "stop": entry - want * stp[i - 1], "i": i, "commission": c, "swap": 0.0,
                        "spread_cost": inst.to_usd((ao[i] - bo[i]) / 2 * units, entry)}
+
+        # 2b. Overnight financing for positions carried through the rollover.
+        if pos is not None and i > pos["i"] and ts.hour == 21 and (costs.swap_long_pips or costs.swap_short_pips):
+            pips = costs.swap_long_pips if pos["dir"] > 0 else costs.swap_short_pips
+            nights = 3 if ts.weekday() == 2 else 1
+            amount = inst.to_usd(pips * inst.pip * pos["units"] * nights, bo[i])
+            cash += amount
+            pos["swap"] += amount
 
         # 3. Intrabar stop.
         if pos is not None:

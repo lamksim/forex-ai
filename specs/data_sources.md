@@ -17,4 +17,4 @@ M1 to H1 by default (`--timeframe`).
 
 ## Known gaps (Phase 2)
 - Economic calendar (to tag news bars and test news hypotheses).
-- Swap/rollover financing is not modelled yet; strategies holding overnight are slightly flattered.
+- Swap is modelled with constant per-pair rates (Phase 2); historical swap rates are not available for free.

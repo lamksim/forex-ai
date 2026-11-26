@@ -234,7 +234,10 @@ def load_mt5(symbol: str, start, end, timeframe: str = "H1", broker_symbol: str 
         if not mt5.symbol_select(name, True):
             raise RuntimeError(f"Symbol {name} not available in this MT5 account. "
                                "Check Market Watch for the exact name and pass --mt5-symbol.")
-        point = mt5.symbol_info(name).point
+        info = mt5.symbol_info(name)
+        point = info.point
+        swap = {"swap_long": getattr(info, "swap_long", None), "swap_short": getattr(info, "swap_short", None),
+                "swap_mode": getattr(info, "swap_mode", None)}
         tf = getattr(mt5, f"TIMEFRAME_{timeframe}")
         # Request a padded window as explicit UTC datetimes (naive ones are read
         # in the PC's local time zone), then clip exactly after converting to UTC.
@@ -256,7 +259,9 @@ def load_mt5(symbol: str, start, end, timeframe: str = "H1", broker_symbol: str 
         out[f"bid_{k}"] = df[k]
         out[f"ask_{k}"] = df[k] + spread
     out["volume"] = df["tick_volume"].astype(float)
-    return out[BAR_COLUMNS]
+    out = out[BAR_COLUMNS]
+    out.attrs["swap"] = swap
+    return out
 
 
 # --------------------------------------------------------------------------- storage
@@ -323,7 +328,7 @@ def synthetic_bars(symbol: str = "EURUSD", start: str = "2019-01-01", end: str =
     n = len(idx)
     hours = idx.hour.values
     # Volatility is higher in the London and New York sessions.
-    vol = np.where((hours >= 7) & (hours < 17), 1.4, 0.7) * 0.0009 * (inst.pip / 0.0001)
+    vol = np.where((hours >= 7) & (hours < 17), 1.4, 0.7) * 0.0009  # log-return vol, same for every pair
     start_price = {"EURUSD": 1.12, "GBPUSD": 1.28, "USDJPY": 130.0}[inst.symbol]
     rets = rng.standard_t(df=4, size=n) * vol / np.sqrt(2) + drift
     close = start_price * np.exp(np.cumsum(rets))
