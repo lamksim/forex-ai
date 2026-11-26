@@ -124,7 +124,7 @@ def main(argv=None):
     m.add_argument("--end", required=True)
     m.add_argument("--timeframe", default="H1", choices=["M1", "M5", "M15", "H1"])
     m.add_argument("--mt5-path", help=r"Path to terminal64.exe, e.g. C:\Program Files\MetaTrader 5\terminal64.exe")
-    m.add_argument("--utc-offset", type=float, help="Broker server time minus UTC, in hours (auto-detected if omitted)")
+    m.add_argument("--utc-offset", type=float, help="Fixed server-minus-UTC offset in hours. Default: New York time + 7 h (UTC+2/+3 with US daylight saving), which MetaQuotes-Demo and most FX brokers use")
     m.add_argument("--out")
     m.set_defaults(fn=cmd_mt5)
 

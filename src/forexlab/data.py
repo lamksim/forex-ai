@@ -194,6 +194,21 @@ def download_dukascopy_h1(symbol: str, start: date, end: date, cache_dir: Path,
 
 # --------------------------------------------------------------------------- MT5 (optional)
 
+def server_time_to_utc(server: pd.DatetimeIndex | pd.Series, utc_offset_hours: float | None = None) -> pd.DatetimeIndex:
+    """Convert naive broker server times to UTC.
+
+    Default rule: server time = New York local time + 7 h (UTC+2 winter, UTC+3 summer).
+    The US clock change happens on a Sunday at 02:00 New York time, while the FX
+    market is closed, so ambiguous or missing hours do not occur in real bars.
+    """
+    server = pd.DatetimeIndex(server)
+    if utc_offset_hours is not None:
+        return (server - pd.Timedelta(hours=utc_offset_hours)).tz_localize("UTC")
+    ny = (server - pd.Timedelta(hours=7)).tz_localize("America/New_York", ambiguous=False,
+                                                       nonexistent="shift_forward")
+    return ny.tz_convert("UTC")
+
+
 def load_mt5(symbol: str, start, end, timeframe: str = "H1", broker_symbol: str | None = None,
              utc_offset_hours: float | None = None, terminal_path: str | None = None) -> pd.DataFrame:
     """Load bars from a running MetaTrader 5 terminal (Windows only).
@@ -202,10 +217,11 @@ def load_mt5(symbol: str, start, end, timeframe: str = "H1", broker_symbol: str 
     side is reconstructed as bid + spread. That understates intrabar spread
     widening a little, but the spread is your broker's own.
     `broker_symbol` covers brokers that add a suffix (e.g. "EURUSD.m").
-    MT5 bar times are in the broker's server time (often UTC+2/+3), not UTC.
-    The offset is detected from the latest tick when the market is open, or
-    can be given as `utc_offset_hours`. A fixed offset ignores the broker's
-    summer-time switch, so session statistics can be off by an hour for part of the year.
+    MT5 bar times are in the broker's server time, not UTC. Most FX brokers,
+    MetaQuotes-Demo included, run "New York time + 7 h" (UTC+2 in winter, UTC+3
+    in summer), so by default bars are converted with that rule, which tracks the
+    US daylight-saving switch. Pass `utc_offset_hours` only for a broker that
+    uses a fixed offset all year.
     """
     import MetaTrader5 as mt5  # type: ignore  # optional dependency
 
@@ -219,24 +235,21 @@ def load_mt5(symbol: str, start, end, timeframe: str = "H1", broker_symbol: str 
             raise RuntimeError(f"Symbol {name} not available in this MT5 account. "
                                "Check Market Watch for the exact name and pass --mt5-symbol.")
         point = mt5.symbol_info(name).point
-        if utc_offset_hours is None:
-            tick = mt5.symbol_info_tick(name)
-            lag = tick.time - time.time() if tick else None
-            if lag is None or abs(lag - round(lag / 3600) * 3600) > 600:
-                raise RuntimeError("Cannot detect the broker's server-time offset (market closed?). "
-                                   "Pass --utc-offset, e.g. 2 for a UTC+2 server.")
-            utc_offset_hours = round(lag / 3600)
         tf = getattr(mt5, f"TIMEFRAME_{timeframe}")
-        rates = mt5.copy_rates_range(name, tf, pd.Timestamp(start).to_pydatetime(),
-                                     pd.Timestamp(end).to_pydatetime())
+        # Request a padded window as explicit UTC datetimes (naive ones are read
+        # in the PC's local time zone), then clip exactly after converting to UTC.
+        lo = pd.Timestamp(start, tz="UTC")
+        hi = pd.Timestamp(end, tz="UTC") + pd.Timedelta(days=1)
+        rates = mt5.copy_rates_range(name, tf, (lo - pd.Timedelta(days=1)).to_pydatetime(),
+                                     (hi + pd.Timedelta(days=1)).to_pydatetime())
     finally:
         mt5.shutdown()
     if rates is None or len(rates) == 0:
         raise RuntimeError(f"MT5 returned no {timeframe} bars for {name}. Scroll the chart back "
                            "or raise Tools > Options > Charts > Max bars, then retry.")
     df = pd.DataFrame(rates)
-    df.index = (pd.to_datetime(df["time"], unit="s", utc=True)
-                - pd.Timedelta(hours=utc_offset_hours)).rename("time")
+    df.index = server_time_to_utc(pd.to_datetime(df["time"], unit="s"), utc_offset_hours).rename("time")
+    df = df[(df.index >= lo) & (df.index < hi)]
     spread = df["spread"] * point
     out = pd.DataFrame(index=df.index)
     for k in ("open", "high", "low", "close"):

@@ -254,4 +254,14 @@ def test_load_mt5_builds_ask_from_spread(monkeypatch):
     assert (df["ask_close"] - df["bid_close"]).round(6).eq(0.00012).all()  # 12 points = 1.2 pips
     assert str(df.index[0]) == "2024-01-02 00:00:00+00:00"
     shifted = D.load_mt5("EURUSD", "2024-01-02", "2024-01-03", "H1", broker_symbol="EURUSD.m", utc_offset_hours=2)
-    assert str(shifted.index[0]) == "2024-01-01 22:00:00+00:00"  # server UTC+2 -> UTC
+    # server 00:00-02:00 at UTC+2 is 22:00-00:00 UTC; bars before the requested start are clipped
+    assert list(shifted.index.strftime("%Y-%m-%d %H:%M")) == ["2024-01-02 00:00"]
+
+
+def test_server_time_follows_us_daylight_saving():
+    winter = D.server_time_to_utc(pd.DatetimeIndex(["2024-01-10 10:00"]))
+    summer = D.server_time_to_utc(pd.DatetimeIndex(["2024-07-10 10:00"]))
+    assert str(winter[0]) == "2024-01-10 08:00:00+00:00"  # UTC+2
+    assert str(summer[0]) == "2024-07-10 07:00:00+00:00"  # UTC+3
+    fixed = D.server_time_to_utc(pd.DatetimeIndex(["2024-07-10 10:00"]), 2)
+    assert str(fixed[0]) == "2024-07-10 08:00:00+00:00"
