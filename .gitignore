@@ -7,3 +7,4 @@ dist/
 .venv/
 data/
 !data/.gitkeep
+trading_logs/
