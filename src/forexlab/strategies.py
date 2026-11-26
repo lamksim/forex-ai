@@ -81,6 +81,45 @@ def rsi_reversion_ex_overlap(df: pd.DataFrame, period: int, band: int, stop_atr:
     return signal.astype(int), stop
 
 
+def efficiency_ratio(close: pd.Series, window: int) -> pd.Series:
+    """Kaufman efficiency ratio: net move / total path over `window` bars (0 = noise, 1 = straight line)."""
+    net = (close - close.shift(window)).abs()
+    path = close.diff().abs().rolling(window, min_periods=window).sum()
+    return net / path.replace(0, np.nan)
+
+
+def ma_cross_trending(df: pd.DataFrame, er_window: int, er_min: float, stop_atr: float,
+                      fast: int = 20, slow: int = 50) -> tuple[pd.Series, pd.Series]:
+    """MA crossover that only holds a position while the market is trending
+    (efficiency ratio above er_min); flat in choppy markets."""
+    signal, stop = ma_cross(df, fast, slow, stop_atr)
+    er = efficiency_ratio(mid(df), er_window)
+    signal = signal.where(er >= er_min, 0)
+    return signal.astype(int), stop
+
+
+def daily_atr(df: pd.DataFrame, days: int = 14) -> pd.Series:
+    """ATR of daily bars, known only from the day after (no look-ahead), on the H1 index."""
+    d = pd.DataFrame({"h": mid(df, "high"), "l": mid(df, "low"), "c": mid(df, "close")})
+    daily = d.resample("1D").agg({"h": "max", "l": "min", "c": "last"}).dropna()
+    prev = daily["c"].shift(1)
+    tr = pd.concat([daily["h"] - daily["l"], (daily["h"] - prev).abs(), (daily["l"] - prev).abs()], axis=1).max(axis=1)
+    a = tr.rolling(days, min_periods=days).mean().shift(1)  # yesterday's value
+    return a.reindex(df.index.normalize()).set_axis(df.index)
+
+
+def ts_momentum(df: pd.DataFrame, lookback_days: int, stop_atr: float) -> tuple[pd.Series, pd.Series]:
+    """Time-series momentum: hold the direction of the last `lookback_days` return,
+    re-decided once a day at the 20:00 UTC bar close (before rollover). Stop on daily ATR."""
+    c = mid(df)
+    past = c.shift(lookback_days * 24)
+    raw = pd.Series(np.nan, index=df.index)
+    at_decision = df.index.hour == 20
+    raw[at_decision] = np.sign(c - past)[at_decision]
+    signal = raw.ffill().fillna(0)
+    return signal.astype(int), stop_atr * daily_atr(df)
+
+
 @dataclass(frozen=True)
 class Family:
     name: str
@@ -121,6 +160,19 @@ FAMILIES: dict[str, Family] = {
         "RSI mean reversion works outside the London/New York overlap, when news-driven flow "
         "is weaker. (Suggested by the first EURUSD run's session breakdown, so EURUSD results "
         "are partly in-sample; GBPUSD and USDJPY are the cleaner test.)",
+    ),
+    "ma_cross_trending": Family(
+        "ma_cross_trending", ma_cross_trending,
+        {"er_window": [48, 120], "er_min": [0.15, 0.3], "stop_atr": [3.0]},
+        "The H1 20/50 crossover loses in choppy markets; holding it only when the efficiency "
+        "ratio shows a trend removes most losing trades. (20/50 was the most-chosen setting in "
+        "round 2, so this is partly informed by earlier results.)",
+    ),
+    "ts_momentum": Family(
+        "ts_momentum", ts_momentum,
+        {"lookback_days": [20, 60, 120], "stop_atr": [2.0, 4.0]},
+        "Currencies trend over weeks to months (time-series momentum, documented in academic "
+        "FX research); a daily decision with wide stops keeps trading costs low.",
     ),
 }
 

@@ -25,3 +25,9 @@ Later phases add live-vs-backtest deviation.
 
 4. **Holdout:** the most recent 20% of data. One look per strategy version. Passing means
    holdout Sharpe > 0.5 and drawdown ≤ 5%; it is a sanity check, not a second optimisation.
+
+## Portfolio test (Phase 2)
+`forexlab portfolio` runs the walk-forward on each pair, then sums the pairs' out-of-sample
+daily returns into one account (0.25% risk per trade per pair, at most 3 open positions).
+The same gates apply except profit factor; N is every configuration tried on any of the pairs.
+Known gap: daily/weekly loss limits are still enforced per pair, not on the combined account.

@@ -63,8 +63,13 @@ def summarize(equity: pd.Series, trades: pd.DataFrame, initial_equity: float) ->
             "avg_win_usd": float(wins.mean()) if len(wins) else 0.0,
             "avg_loss_usd": float(losses.mean()) if len(losses) else 0.0,
             "max_consecutive_losses": max_consecutive_losses(pnl),
-            "total_costs_usd": float(trades["commission_usd"].sum() + trades["spread_cost_usd"].sum()),
+            "total_costs_usd": float(trades["commission_usd"].sum() + trades["spread_cost_usd"].sum()
+                                     + trades.get("slippage_usd", pd.Series(dtype=float)).sum()),
+            "swap_usd": float(trades.get("swap_usd", pd.Series(dtype=float)).sum()),
             "gross_before_costs_usd": float(trades["gross_mid_pnl_usd"].sum()),
+            # Sum of trade P&L. net_profit_usd above comes from the equity curve, which for
+            # walk-forward results compounds separate $10k test windows, so the two differ slightly.
+            "net_trades_usd": float(pnl.sum()),
             "by_session": {k: {"trades": int(len(g)), "pnl_usd": float(g["pnl_usd"].sum())}
                            for k, g in trades.groupby("session")},
             "exit_reasons": {k: int(v) for k, v in trades["exit_reason"].value_counts().items()},

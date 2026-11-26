@@ -10,4 +10,7 @@
 7. Risk limits are checked on bar-close equity. A breach flattens at the close.
 8. One position per strategy. Reversal = exit then entry on the same open.
 9. Open positions at the end of data are closed at the last close and marked `end_of_data`.
-10. The execution engine is deterministic. No LLM call is ever on the order path.
+10. Overnight swap: positions open through the 21:00 UTC bar pay or earn `swap_long_pips` /
+    `swap_short_pips` per night (triple on Wednesday). Values come from the broker's current
+    MT5 swap table, so history is approximated with today's rates.
+11. The execution engine is deterministic. No LLM call is ever on the order path.

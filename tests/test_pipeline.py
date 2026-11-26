@@ -265,3 +265,41 @@ def test_server_time_follows_us_daylight_saving():
     assert str(summer[0]) == "2024-07-10 07:00:00+00:00"  # UTC+3
     fixed = D.server_time_to_utc(pd.DatetimeIndex(["2024-07-10 10:00"]), 2)
     assert str(fixed[0]) == "2024-07-10 08:00:00+00:00"
+
+
+def test_swap_charged_per_night_triple_on_wednesday():
+    b = flat_bars(24 * 7, start="2024-01-01")  # Monday..Sunday, hourly
+    sig = pd.Series(1, index=b.index)
+    stop = pd.Series(0.0020, index=b.index)
+    base = run_backtest(b, sig, stop, "EURUSD", costs=CostModel(0, 0, 0))
+    paid = run_backtest(b, sig, stop, "EURUSD", costs=CostModel(0, 0, 0, swap_long_pips=-1.0))
+    t = paid.trades.iloc[0]
+    units = t["units"]
+    nights = 1 + 1 + 3 + 1 + 1 + 1 + 1  # 21:00 bars Mon..Sun in this synthetic week, Wed counts 3
+    assert t["swap_usd"] == pytest.approx(-1.0 * 0.0001 * units * nights)
+    assert paid.equity.iloc[-1] == pytest.approx(base.equity.iloc[-1] + t["swap_usd"])
+
+
+def test_portfolio_combines_pairs_and_counts_all_trials(tmp_path):
+    from forexlab.research import research_portfolio
+    log = ExperimentLog(tmp_path / "exp.jsonl")
+    results = []
+    for sym, seed in (("EURUSD", 11), ("USDJPY", 12)):
+        b = D.synthetic_bars(sym, "2019-01-01", "2021-01-01", seed=seed)
+        results.append(research(b, sym, "ts_momentum", D.fingerprint(b), log, train_months=12, test_months=6))
+    pr = research_portfolio(results, log)
+    assert set(pr.per_symbol) == {"EURUSD", "USDJPY"}
+    assert pr.metrics["trades"] == sum(r.oos_metrics["trades"] for r in results)
+    assert pr.deflated["n_trials"] == len(FAMILIES["ts_momentum"].configs())
+    assert any(e["kind"] == "portfolio" and "correlation" in e["extra"] for e in log.entries())
+    from forexlab.research import write_portfolio_report
+    assert "correlation" in write_portfolio_report(pr, tmp_path / "rep").read_text()
+
+
+def test_cost_accounting_adds_up(bars):
+    sig, stop = generate("ma_cross", bars, {"fast": 10, "slow": 50, "stop_atr": 2.0})
+    res = run_backtest(bars, sig, stop, "EURUSD",
+                       costs=CostModel(3.5, 0.2, 0.3, swap_long_pips=-0.5, swap_short_pips=0.2))
+    m = M.summarize(res.equity, res.trades, 10_000)
+    assert m["net_trades_usd"] == pytest.approx(m["gross_before_costs_usd"] - m["total_costs_usd"] + m["swap_usd"])
+    assert m["net_trades_usd"] == pytest.approx(m["net_profit_usd"], abs=1e-6)  # single run: equity agrees

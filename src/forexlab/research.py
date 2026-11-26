@@ -117,7 +117,8 @@ def research(bars: pd.DataFrame, symbol: str, family: str, data_fp: str,
     r = pd.concat(oos_returns).sort_index()
     oos_equity = 10_000.0 * (1 + r).cumprod()
     trades = pd.concat(oos_trades, ignore_index=True) if oos_trades else pd.DataFrame(
-        columns=["pnl_usd", "commission_usd", "spread_cost_usd", "gross_mid_pnl_usd", "session", "exit_reason"])
+        columns=["pnl_usd", "commission_usd", "spread_cost_usd", "slippage_usd", "swap_usd",
+                 "gross_mid_pnl_usd", "session", "exit_reason"])
     oos_m = M.summarize(oos_equity, trades, 10_000.0)
     oos_m["sharpe"] = M.sharpe(r)
 
@@ -137,6 +138,84 @@ def research(bars: pd.DataFrame, symbol: str, family: str, data_fp: str,
     if report_dir:
         result.report_path = write_report(result, fam.hypothesis, costs, Path(report_dir))
     return result
+
+
+@dataclass
+class PortfolioResult:
+    family: str
+    symbols: list[str]
+    per_symbol: dict[str, dict]
+    metrics: dict
+    deflated: dict
+    gates: dict
+    passed: bool
+    correlation: dict
+
+
+def research_portfolio(results: list[ResearchResult], log: ExperimentLog, gates: Gates | None = None) -> PortfolioResult:
+    """Combine per-pair walk-forward results of one family into a portfolio.
+
+    Each pair risks 0.25% of the shared account per trade with at most one position,
+    so the portfolio holds at most 3 positions (specs/risk_management.md). Its daily
+    return is the sum of the pairs' out-of-sample daily returns. The trial count is
+    every configuration tried on any of the pairs, so diversification cannot hide snooping.
+    """
+    gates = gates or Gates()
+    fam = results[0].family
+    rets = {r.symbol: r.oos_equity.pct_change().fillna(r.oos_equity.iloc[0] / 10_000.0 - 1) for r in results}
+    frame = pd.DataFrame(rets).fillna(0.0)
+    port = frame.sum(axis=1)
+    equity = 10_000.0 * (1 + port).cumprod()
+    m = {
+        "sharpe": M.sharpe(port), "total_return": float(equity.iloc[-1] / 10_000.0 - 1),
+        "max_drawdown": M.max_drawdown(equity), "avg_daily_return": float(port.mean()),
+        "days": int(len(port)), "trades": int(sum(r.oos_metrics["trades"] for r in results)),
+    }
+    gross_win = sum(max(r.oos_metrics.get("net_profit_usd", 0), 0) for r in results)
+    gross_loss = -sum(min(r.oos_metrics.get("net_profit_usd", 0), 0) for r in results)
+    m["profit_factor"] = None  # per-trade profit factor is reported per pair
+    trials: dict[str, float] = {}
+    for r in results:
+        trials.update(log.trials(r.symbol))
+    deflated = M.deflated_sharpe(port, max(len(trials), 1), list(trials.values()))
+    g = {k: v for k, v in gates.check({**m, "profit_factor": float("inf")}, deflated["dsr"]).items()
+         if not k.startswith("profit_factor")}
+    corr = frame.corr().round(2).to_dict()
+    log.record(run_id="portfolio-" + "-".join(r.run_id for r in results), kind="portfolio",
+               symbol="+".join(r.symbol for r in results), family=fam, params={},
+               data_fingerprint="multi",
+               segment={"start": str(frame.index[0]), "end": str(frame.index[-1])},
+               metrics=m, extra={"deflated": deflated, "gates": g, "passed": all(g.values()),
+                                 "pairs_net_usd": {r.symbol: r.oos_metrics.get("net_profit_usd") for r in results},
+                                 "gross_win_usd": gross_win, "gross_loss_usd": gross_loss,
+                                 "correlation": frame.corr().round(3).to_dict()})
+    return PortfolioResult(fam, [r.symbol for r in results],
+                           {r.symbol: {"sharpe": r.oos_metrics["sharpe"], "return": r.oos_metrics["total_return"],
+                                       "dsr": r.deflated["dsr"]} for r in results},
+                           m, deflated, g, all(g.values()), corr)
+
+
+def write_portfolio_report(pr: PortfolioResult, out_dir: Path) -> Path:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"PORTFOLIO_{pr.family}_{'-'.join(pr.symbols)}.md"
+    m = pr.metrics
+    lines = [f"# Portfolio report: {pr.family} on {', '.join(pr.symbols)}", "",
+             f"**Verdict:** {'PASSED research gates' if pr.passed else 'REJECTED'}", "",
+             "| Metric | Value |", "| --- | --- |"]
+    for k in ("sharpe", "total_return", "max_drawdown", "avg_daily_return", "days", "trades"):
+        lines.append(f"| {k} | {_fmt(m[k])} |")
+    lines += ["", f"- Trials counted (all pairs): **{pr.deflated['n_trials']}**",
+              f"- Best-of-N Sharpe from noise: **{pr.deflated['sr0_annual']:.2f}**",
+              f"- Deflated Sharpe: **{pr.deflated['dsr']:.3f}**", "", "## Gates", ""]
+    lines += [f"- [{'x' if ok else ' '}] {k}" for k, ok in pr.gates.items()]
+    lines += ["", "## Pairs", "", "| Pair | Sharpe | Return | DSR |", "| --- | --- | --- | --- |"]
+    lines += [f"| {k} | {v['sharpe']:.2f} | {v['return']:.2%} | {v['dsr']:.3f} |" for k, v in pr.per_symbol.items()]
+    lines += ["", "## Daily-return correlation", "", "| | " + " | ".join(pr.symbols) + " |",
+              "| --- " * (len(pr.symbols) + 1) + "|"]
+    for a in pr.symbols:
+        lines.append(f"| {a} | " + " | ".join(f"{pr.correlation[b][a]:.2f}" for b in pr.symbols) + " |")
+    path.write_text("\n".join(lines) + "\n")
+    return path
 
 
 def holdout_evaluation(all_bars: pd.DataFrame, holdout_start: pd.Timestamp, symbol: str,
@@ -179,7 +258,7 @@ def write_report(r: ResearchResult, hypothesis: str, costs: CostModel, out_dir: 
     ]
     for k in ("total_return", "net_profit_usd", "sharpe", "max_drawdown", "avg_daily_return", "trades",
               "win_rate", "profit_factor", "avg_win_usd", "avg_loss_usd", "max_consecutive_losses",
-              "total_costs_usd", "gross_before_costs_usd"):
+              "gross_before_costs_usd", "total_costs_usd", "swap_usd", "net_trades_usd"):
         if k in m:
             lines.append(f"| {k} | {_fmt(m[k])} |")
     lines += [
