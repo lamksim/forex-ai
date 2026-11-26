@@ -1,0 +1,69 @@
+name: research
+# Downloads Dukascopy data and runs the walk-forward research on it.
+# Manual only (Actions tab > research > Run workflow). Dukascopy currently answers
+# HTTP 503 to GitHub's runners, so this may need a self-hosted runner or a local run.
+on:
+  workflow_dispatch:
+    inputs:
+      symbol:
+        description: Pair
+        default: EURUSD
+      start:
+        description: First day (YYYY-MM-DD)
+        default: "2019-01-01"
+      end:
+        description: Last day (YYYY-MM-DD)
+        default: "2025-10-31"
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      SYMBOL: ${{ inputs.symbol || 'EURUSD' }}
+      START: ${{ inputs.start || '2019-01-01' }}
+      END: ${{ inputs.end || '2025-10-31' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .
+      - name: Restore cached Dukascopy files
+        uses: actions/cache/restore@v4
+        with:
+          path: data/raw
+          key: dukascopy-${{ env.SYMBOL }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: dukascopy-${{ env.SYMBOL }}-
+      - name: Download
+        run: python -m forexlab download --symbol "$SYMBOL" --start "$START" --end "$END"
+      - name: Save downloaded files (even after a failure, so a re-run resumes)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/raw
+          key: dukascopy-${{ env.SYMBOL }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Research
+        run: |
+          python -m forexlab research --symbol "$SYMBOL" --data "data/${SYMBOL}_M1_${START}_${END}.csv.gz" | tee research_output.txt
+          python - <<'PY'
+          import pandas as pd, sys, os
+          sys.path.insert(0, "src")
+          from forexlab import data as D
+          df = D.load_bars(f"data/{os.environ['SYMBOL']}_M1_{os.environ['START']}_{os.environ['END']}.csv.gz")
+          sp = (df.ask_close - df.bid_close) / (0.01 if "JPY" in os.environ["SYMBOL"] else 0.0001)
+          print(f"Bars: {len(df):,}  first {df.index[0]}  last {df.index[-1]}")
+          print("Close price sample:", df.bid_close.iloc[[0, len(df)//2, -1]].round(5).tolist())
+          print("Spread pips: median %.2f  p95 %.2f  max %.1f" % (sp.median(), sp.quantile(.95), sp.max()))
+          print("Median spread by UTC hour:", sp.groupby(sp.index.hour).median().round(2).to_dict())
+          PY
+      - name: Summary
+        if: always()
+        run: |
+          { echo '```'; cat research_output.txt 2>/dev/null; echo '```'; cat research_log/reports/*.md 2>/dev/null; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: research-${{ env.SYMBOL }}
+          path: |
+            research_log/
+            research_output.txt
