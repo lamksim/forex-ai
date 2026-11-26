@@ -134,6 +134,27 @@ def cmd_trials(args):
           f"{len(log.entries())} experiment records in {args.log}")
 
 
+def cmd_live(args):
+    import json as _json
+    from . import live as L
+    cfg = L.LiveConfig(symbol=args.symbol, broker_symbol=args.mt5_symbol, family=args.family,
+                       params=_json.loads(args.params) if args.params else L.LiveConfig().params,
+                       magic=args.magic, log_dir=Path(args.log_dir), utc_offset_hours=args.utc_offset)
+    if args.once:
+        import MetaTrader5 as mt5  # type: ignore
+        ok = mt5.initialize(path=args.mt5_path, timeout=120_000) if args.mt5_path else mt5.initialize(timeout=120_000)
+        if not ok:
+            raise SystemExit(f"MT5 initialize failed: {mt5.last_error()}")
+        try:
+            print(_json.dumps(L.run_once(mt5, cfg), default=str, indent=2))
+        finally:
+            mt5.shutdown()
+    else:
+        print(f"Forward-testing {cfg.family} {cfg.params} on {cfg.name} (DEMO only). "
+              f"Logs: {cfg.log_dir}. Create {Path(cfg.log_dir) / 'STOP'} to flatten and stop.", flush=True)
+        L.run_forever(cfg, terminal_path=args.mt5_path)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="forexlab", description="Forex AI research lab, Phase 1")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -214,6 +235,18 @@ def main(argv=None):
     t.add_argument("--symbol", default="EURUSD")
     t.add_argument("--log", default="research_log/experiments.jsonl")
     t.set_defaults(fn=cmd_trials)
+
+    lv = sub.add_parser("live", help="Demo forward test on MT5: one decision per closed H1 bar (DEMO accounts only)")
+    lv.add_argument("--symbol", default="USDJPY")
+    lv.add_argument("--mt5-symbol", help="Broker's name for the pair if it has a suffix")
+    lv.add_argument("--family", default="ma_cross_trending", choices=list(FAMILIES))
+    lv.add_argument("--params", help='JSON, e.g. \'{"er_window": 120, "er_min": 0.15, "stop_atr": 3.0}\'')
+    lv.add_argument("--magic", type=int, default=20261126, help="Only positions with this magic number are touched")
+    lv.add_argument("--log-dir", default="trading_logs")
+    lv.add_argument("--mt5-path")
+    lv.add_argument("--utc-offset", type=float)
+    lv.add_argument("--once", action="store_true", help="Run a single cycle and exit")
+    lv.set_defaults(fn=cmd_live)
 
     args = p.parse_args(argv)
     args.fn(args)

@@ -31,7 +31,19 @@ python -m forexlab portfolio --data data/EURUSD_*.csv.gz data/GBPUSD_*.csv.gz da
 
 # 3. Only if a family passes every gate: one look at the sealed holdout
 python -m forexlab holdout --data data/EURUSD_M1_...csv.gz --family donchian --version donchian-v1
+
+# 4. Demo forward test on a logged-in MT5 DEMO account (Algo Trading must be on)
+python -m forexlab live --symbol USDJPY --once   # one cycle, prints the decision
+python -m forexlab live --symbol USDJPY          # runs every hour; create trading_logs/STOP to stop
 ```
+
+### Current demo forward test
+
+USDJPY `ma_cross_trending` (er_window 120, er_min 0.15, stop 3 ATR) on the MetaQuotes-Demo
+account, started 2026-11-26 at Lam's request. This strategy **did not pass the research gates**
+(walk-forward Sharpe 0.79, deflated Sharpe well below 0.95, one pair, one regime). The forward
+test is an experiment to see how live fills, spreads and swaps compare with the backtest. It is
+not a promotion, and no real money is involved.
 
 ## How it avoids fooling itself
 
