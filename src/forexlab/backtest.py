@@ -98,14 +98,17 @@ def run_backtest(bars: pd.DataFrame, signal: pd.Series, stop: pd.Series, symbol:
         cash += pnl - comm
         swap = pos["swap"]  # already in cash
         spread_cost = pos["spread_cost"] + inst.to_usd(spread_now / 2 * pos["units"], price)
+        slip_cost = inst.to_usd(2 * slip * pos["units"], price)
         trades.append({
             "entry_time": idx[pos["i"]], "exit_time": idx[i], "direction": pos["dir"],
             "entry": pos["entry"], "exit": price, "units": pos["units"],
             "pnl_usd": pnl - comm - pos["commission"] + swap,
             "swap_usd": swap,
-            "gross_mid_pnl_usd": pnl - comm - pos["commission"] + swap + spread_cost
-                                 + inst.to_usd(2 * slip * pos["units"], price),
+            # Price move at mid, before commission, spread, slippage and swap:
+            # pnl_usd = gross_mid_pnl_usd - commission - spread - slippage + swap
+            "gross_mid_pnl_usd": pnl + spread_cost + slip_cost,
             "commission_usd": comm + pos["commission"], "spread_cost_usd": spread_cost,
+            "slippage_usd": slip_cost,
             "exit_reason": reason, "session": session_of(idx[pos["i"]]),
             "bars_held": i - pos["i"],
         })

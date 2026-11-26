@@ -291,4 +291,15 @@ def test_portfolio_combines_pairs_and_counts_all_trials(tmp_path):
     assert set(pr.per_symbol) == {"EURUSD", "USDJPY"}
     assert pr.metrics["trades"] == sum(r.oos_metrics["trades"] for r in results)
     assert pr.deflated["n_trials"] == len(FAMILIES["ts_momentum"].configs())
-    assert any(e["kind"] == "portfolio" for e in log.entries())
+    assert any(e["kind"] == "portfolio" and "correlation" in e["extra"] for e in log.entries())
+    from forexlab.research import write_portfolio_report
+    assert "correlation" in write_portfolio_report(pr, tmp_path / "rep").read_text()
+
+
+def test_cost_accounting_adds_up(bars):
+    sig, stop = generate("ma_cross", bars, {"fast": 10, "slow": 50, "stop_atr": 2.0})
+    res = run_backtest(bars, sig, stop, "EURUSD",
+                       costs=CostModel(3.5, 0.2, 0.3, swap_long_pips=-0.5, swap_short_pips=0.2))
+    m = M.summarize(res.equity, res.trades, 10_000)
+    assert m["net_trades_usd"] == pytest.approx(m["gross_before_costs_usd"] - m["total_costs_usd"] + m["swap_usd"])
+    assert m["net_trades_usd"] == pytest.approx(m["net_profit_usd"], abs=1e-6)  # single run: equity agrees

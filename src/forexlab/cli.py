@@ -32,7 +32,7 @@ def _costs(args) -> CostModel:
 
 
 def cmd_portfolio(args):
-    from .research import research_portfolio
+    from .research import research_portfolio, write_portfolio_report
     log = ExperimentLog(Path(args.log))
     if len(args.data) != len(args.symbols):
         raise SystemExit("Give one --data file per --symbols entry, in the same order.")
@@ -50,11 +50,12 @@ def cmd_portfolio(args):
             results.append(research(rb, sym, fam, fp, log, costs, args.train_months, args.test_months,
                                     report_dir=Path(args.reports)))
         pr = research_portfolio(results, log)
+        report = write_portfolio_report(pr, Path(args.reports))
         m = pr.metrics
         pairs = "  ".join(f"{k} {v['sharpe']:+.2f}" for k, v in pr.per_symbol.items())
         print(f"{fam:24s} PORTFOLIO sharpe {m['sharpe']:+.2f}  return {m['total_return']:+.2%}  "
               f"maxDD {m['max_drawdown']:.2%}  trades {m['trades']:4d}  DSR {pr.deflated['dsr']:.3f} "
-              f"(N={pr.deflated['n_trials']})  {'PASS' if pr.passed else 'reject'}  | {pairs}")
+              f"(N={pr.deflated['n_trials']})  {'PASS' if pr.passed else 'reject'}  | {pairs}  -> {report}")
 
 
 def cmd_download(args):

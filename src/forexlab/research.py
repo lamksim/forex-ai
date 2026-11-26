@@ -117,7 +117,8 @@ def research(bars: pd.DataFrame, symbol: str, family: str, data_fp: str,
     r = pd.concat(oos_returns).sort_index()
     oos_equity = 10_000.0 * (1 + r).cumprod()
     trades = pd.concat(oos_trades, ignore_index=True) if oos_trades else pd.DataFrame(
-        columns=["pnl_usd", "commission_usd", "spread_cost_usd", "gross_mid_pnl_usd", "session", "exit_reason"])
+        columns=["pnl_usd", "commission_usd", "spread_cost_usd", "slippage_usd", "swap_usd",
+                 "gross_mid_pnl_usd", "session", "exit_reason"])
     oos_m = M.summarize(oos_equity, trades, 10_000.0)
     oos_m["sharpe"] = M.sharpe(r)
 
@@ -186,11 +187,35 @@ def research_portfolio(results: list[ResearchResult], log: ExperimentLog, gates:
                segment={"start": str(frame.index[0]), "end": str(frame.index[-1])},
                metrics=m, extra={"deflated": deflated, "gates": g, "passed": all(g.values()),
                                  "pairs_net_usd": {r.symbol: r.oos_metrics.get("net_profit_usd") for r in results},
-                                 "gross_win_usd": gross_win, "gross_loss_usd": gross_loss})
+                                 "gross_win_usd": gross_win, "gross_loss_usd": gross_loss,
+                                 "correlation": frame.corr().round(3).to_dict()})
     return PortfolioResult(fam, [r.symbol for r in results],
                            {r.symbol: {"sharpe": r.oos_metrics["sharpe"], "return": r.oos_metrics["total_return"],
                                        "dsr": r.deflated["dsr"]} for r in results},
                            m, deflated, g, all(g.values()), corr)
+
+
+def write_portfolio_report(pr: PortfolioResult, out_dir: Path) -> Path:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"PORTFOLIO_{pr.family}_{'-'.join(pr.symbols)}.md"
+    m = pr.metrics
+    lines = [f"# Portfolio report: {pr.family} on {', '.join(pr.symbols)}", "",
+             f"**Verdict:** {'PASSED research gates' if pr.passed else 'REJECTED'}", "",
+             "| Metric | Value |", "| --- | --- |"]
+    for k in ("sharpe", "total_return", "max_drawdown", "avg_daily_return", "days", "trades"):
+        lines.append(f"| {k} | {_fmt(m[k])} |")
+    lines += ["", f"- Trials counted (all pairs): **{pr.deflated['n_trials']}**",
+              f"- Best-of-N Sharpe from noise: **{pr.deflated['sr0_annual']:.2f}**",
+              f"- Deflated Sharpe: **{pr.deflated['dsr']:.3f}**", "", "## Gates", ""]
+    lines += [f"- [{'x' if ok else ' '}] {k}" for k, ok in pr.gates.items()]
+    lines += ["", "## Pairs", "", "| Pair | Sharpe | Return | DSR |", "| --- | --- | --- | --- |"]
+    lines += [f"| {k} | {v['sharpe']:.2f} | {v['return']:.2%} | {v['dsr']:.3f} |" for k, v in pr.per_symbol.items()]
+    lines += ["", "## Daily-return correlation", "", "| | " + " | ".join(pr.symbols) + " |",
+              "| --- " * (len(pr.symbols) + 1) + "|"]
+    for a in pr.symbols:
+        lines.append(f"| {a} | " + " | ".join(f"{pr.correlation[b][a]:.2f}" for b in pr.symbols) + " |")
+    path.write_text("\n".join(lines) + "\n")
+    return path
 
 
 def holdout_evaluation(all_bars: pd.DataFrame, holdout_start: pd.Timestamp, symbol: str,
@@ -233,7 +258,7 @@ def write_report(r: ResearchResult, hypothesis: str, costs: CostModel, out_dir: 
     ]
     for k in ("total_return", "net_profit_usd", "sharpe", "max_drawdown", "avg_daily_return", "trades",
               "win_rate", "profit_factor", "avg_win_usd", "avg_loss_usd", "max_consecutive_losses",
-              "total_costs_usd", "gross_before_costs_usd"):
+              "gross_before_costs_usd", "total_costs_usd", "swap_usd", "net_trades_usd"):
         if k in m:
             lines.append(f"| {k} | {_fmt(m[k])} |")
     lines += [
