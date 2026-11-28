@@ -46,6 +46,10 @@ INSTRUMENTS: dict[str, Instrument] = {
     "EURGBP": Instrument("EURGBP", pip=0.0001, point_scale=1e5, quote="GBP"),
     "EURJPY": Instrument("EURJPY", pip=0.01, point_scale=1e3, quote="JPY"),
     "GBPJPY": Instrument("GBPJPY", pip=0.01, point_scale=1e3, quote="JPY"),
+    "AUDJPY": Instrument("AUDJPY", pip=0.01, point_scale=1e3, quote="JPY"),
+    "NZDJPY": Instrument("NZDJPY", pip=0.01, point_scale=1e3, quote="JPY"),
+    "CADJPY": Instrument("CADJPY", pip=0.01, point_scale=1e3, quote="JPY"),
+    "CHFJPY": Instrument("CHFJPY", pip=0.01, point_scale=1e3, quote="JPY"),
 }
 
 
