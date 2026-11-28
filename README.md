@@ -29,6 +29,11 @@ python -m forexlab mt5 --symbol GBPUSD --start 2019-01-01 --end 2025-10-31
 python -m forexlab portfolio --data data/EURUSD_*.csv.gz data/GBPUSD_*.csv.gz data/USDJPY_*.csv.gz \
     --min-spread 0.3 --swaps EURUSD=-0.7:0.2 GBPUSD=-0.4:0.0 USDJPY=1.2:-2.5
 
+# 2c. Crosses built from the USD pairs (EURGBP, EURJPY, GBPJPY), then e.g. the gotobi family
+python -m forexlab cross --symbol EURJPY --legs data/EURUSD_H1_MT5v2_*.csv.gz data/USDJPY_H1_MT5v2_*.csv.gz
+python -m forexlab research --data data/EURJPY_H1_synthetic-cross.csv.gz --symbol EURJPY \
+    --min-spread 0.7 --family gotobi
+
 # 3. Only if a family passes every gate: one look at the sealed holdout
 python -m forexlab holdout --data data/EURUSD_M1_...csv.gz --family donchian --version donchian-v1
 ```

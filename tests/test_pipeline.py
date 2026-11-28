@@ -303,3 +303,59 @@ def test_cost_accounting_adds_up(bars):
     m = M.summarize(res.equity, res.trades, 10_000)
     assert m["net_trades_usd"] == pytest.approx(m["gross_before_costs_usd"] - m["total_costs_usd"] + m["swap_usd"])
     assert m["net_trades_usd"] == pytest.approx(m["net_profit_usd"], abs=1e-6)  # single run: equity agrees
+
+
+# ---------------------------------------------------------------- round 3: crosses and diversifiers
+
+def _legs():
+    idx = pd.date_range("2024-01-02", periods=3, freq="1h", tz="UTC")
+    def leg(b, a):
+        return pd.DataFrame({f"bid_{k}": b for k in ("open", "high", "low", "close")} |
+                            {f"ask_{k}": a for k in ("open", "high", "low", "close")} | {"volume": 1.0}, index=idx)
+    return {"EURUSD": leg(1.1000, 1.1001), "GBPUSD": leg(1.2500, 1.2501), "USDJPY": leg(150.00, 150.01)}
+
+
+def test_synthetic_cross_prices_and_conversion():
+    legs = _legs()
+    eg = D.synthetic_cross("EURGBP", legs)
+    assert eg["bid_open"].iloc[0] == pytest.approx(1.1000 / 1.2501)  # sell EURUSD bid, buy GBPUSD ask
+    assert eg["ask_open"].iloc[0] == pytest.approx(1.1001 / 1.2500)
+    assert eg["quote_usd"].iloc[0] == pytest.approx(1.25005)
+    ej = D.synthetic_cross("EURJPY", legs)
+    assert ej["ask_close"].iloc[0] == pytest.approx(1.1001 * 150.01)
+    assert ej["quote_usd"].iloc[0] == pytest.approx(1 / 150.005)
+    assert (ej["bid_high"] >= ej["bid_close"]).all() and (ej["bid_low"] <= ej["bid_open"]).all()
+
+
+def test_cross_pnl_converted_with_quote_rate():
+    """EURGBP: a 10-pip stop with GBP worth 1.25 USD loses 0.25% of 10k = 25 USD."""
+    b = flat_bars(10, price=0.8800, spread=0.0001)
+    b["quote_usd"] = 1.25
+    b.loc[b.index[3], ["bid_low", "ask_low"]] = [0.8700, 0.8701]
+    res = run_backtest(b, pd.Series(1, index=b.index), pd.Series(0.0010, index=b.index), "EURGBP",
+                       costs=CostModel(0, 0, 0))
+    assert res.trades.iloc[0]["pnl_usd"] == pytest.approx(-25.0, rel=0.01)
+    with pytest.raises(ValueError):
+        run_backtest(b.drop(columns="quote_usd"), pd.Series(1, index=b.index),
+                     pd.Series(0.0010, index=b.index), "EURGBP")
+
+
+def test_gotobi_holds_only_in_the_tokyo_window_on_gotobi_days(bars):
+    sig, _ = generate("gotobi", bars, {"entry_jst": 8, "exit_jst": 10, "stop_atr": 3.0})
+    held = sig.shift(1).fillna(0) == 1  # position during the bar
+    jst = bars.index.tz_convert("Asia/Tokyo")
+    assert set(jst[held].hour) == {8, 9}
+    days = set(jst[held].date)
+    assert date(2020, 3, 10) in days and date(2020, 3, 11) not in days
+    assert date(2020, 4, 3) in days  # 5 April 2020 was a Sunday: rolled back to Friday
+
+
+def test_london_breakout_one_direction_per_day(bars):
+    sig, stop = generate("london_breakout", bars, {"exit_hour": 16, "stop_mult": 1.0})
+    ldn = bars.index.tz_convert("Europe/London")
+    day = pd.Series(ldn.date, index=bars.index)
+    dirs = sig[sig != 0].groupby(day[sig != 0]).nunique()
+    assert (dirs == 1).all()
+    held_hours = set((bars.index[1:])[sig.iloc[:-1].to_numpy() != 0].tz_convert("Europe/London").hour)
+    assert held_hours and min(held_hours) >= 7 and max(held_hours) < 16
+    assert (stop[sig != 0] > 0).all()
