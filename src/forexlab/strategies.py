@@ -208,6 +208,64 @@ def london_breakout(df: pd.DataFrame, exit_hour: int, stop_mult: float) -> tuple
     return signal.astype(int), stop.where(stop > 0)
 
 
+# --------------------------------------------------------------------------- round 3b
+
+HOME_HOURS = {"EUR": (7, 16), "GBP": (7, 16), "JPY": (0, 7), "USD": (13, 21)}  # UTC, main trading hours
+
+
+def home_hours_drift(df: pd.DataFrame, side: str, stop_atr: float, symbol: str = "") -> tuple[pd.Series, pd.Series]:
+    """Ranaldo (2009) / Breedon & Ranaldo (2013): a currency tends to depreciate during its
+    own home trading hours (domestic buyers of foreign currency dominate the flow).
+    side="base": short the pair during the base currency's home hours; side="quote": long
+    the pair during the quote currency's home hours. The pair is inferred from the price
+    level when `symbol` is not given (JPY pairs > 20, else EUR/GBP vs USD)."""
+    sym = symbol.upper() or _guess_symbol(df)
+    ccy = sym[:3] if side == "base" else sym[3:]
+    start, end = HOME_HOURS[ccy]
+    direction = -1 if side == "base" else 1
+    nxt = (df.index + pd.Timedelta(hours=1)).hour
+    held = (nxt >= start) & (nxt < end) & (df.index.weekday < 5)
+    signal = pd.Series(np.where(held, direction, 0), index=df.index)
+    return signal.astype(int), stop_atr * atr(df)
+
+
+def _guess_symbol(df: pd.DataFrame) -> str:
+    p = float(mid(df).median())
+    return "USDJPY" if p > 20 else "EURUSD"
+
+
+def asia_reversion(df: pd.DataFrame, window: int, entry_z: float, stop_atr: float) -> tuple[pd.Series, pd.Series]:
+    """Z-score reversion only in the quiet Asian session (22:00-06:00 UTC), flat from 06:00
+    so no position meets the London open. Liquidity is thin and moves tend to fade."""
+    signal, stop = zscore_reversion(df, window, entry_z, stop_atr)
+    nxt = (df.index + pd.Timedelta(hours=1)).hour
+    asia = (nxt >= 22) | (nxt < 6)
+    return signal.where(asia, 0).astype(int), stop
+
+
+def daily_reversal(df: pd.DataFrame, move_atr: float, hold_hours: int, stop_atr: float) -> tuple[pd.Series, pd.Series]:
+    """Fade outsized days: if the last 24 hours moved more than move_atr daily ATRs (as of
+    the 20:00 UTC close, before rollover), take the opposite side for `hold_hours`."""
+    c = mid(df)
+    move = c - c.shift(24)
+    datr = daily_atr(df)
+    trig = (df.index.hour == 20) & (move.abs() > move_atr * datr)
+    raw = pd.Series(np.where(trig, -np.sign(move), np.nan), index=df.index)
+    # hold for hold_hours bars after the trigger, then flat
+    signal = raw.ffill(limit=hold_hours - 1).fillna(0)
+    return signal.astype(int), stop_atr * datr
+
+
+def gotobi_fix_reversal(df: pd.DataFrame, exit_jst: int, stop_atr: float) -> tuple[pd.Series, pd.Series]:
+    """After the 9:55 JST fix the dollar buying stops and the yen tends to recover: short the
+    yen pair from 10:00 JST to `exit_jst` on gotobi days."""
+    nxt = (df.index + pd.Timedelta(hours=1)).tz_convert("Asia/Tokyo")
+    days = gotobi_days(df.index)
+    on_day = np.fromiter((d in days for d in nxt.date), dtype=bool, count=len(nxt))
+    held = on_day & (nxt.hour >= 10) & (nxt.hour < exit_jst)
+    return pd.Series(np.where(held, -1, 0), index=df.index).astype(int), stop_atr * atr(df)
+
+
 @dataclass(frozen=True)
 class Family:
     name: str
@@ -287,8 +345,31 @@ FAMILIES: dict[str, Family] = {
         "The first break of the quiet Asian range after the London open starts the day's move "
         "(a widely taught intraday rule).",
     ),
+    "home_hours_drift": Family(
+        "home_hours_drift", home_hours_drift,
+        {"side": ["base", "quote"], "stop_atr": [3.0]},
+        "Currencies depreciate during their own home trading hours (Ranaldo 2009; Breedon & "
+        "Ranaldo 2013): short the pair in the base currency's hours, long in the quote's.",
+    ),
+    "asia_reversion": Family(
+        "asia_reversion", asia_reversion,
+        {"window": [12, 24], "entry_z": [1.5, 2.0], "stop_atr": [2.0]},
+        "In the thin Asian session (22-06 UTC) stretches from the recent mean fade before London.",
+    ),
+    "daily_reversal": Family(
+        "daily_reversal", daily_reversal,
+        {"move_atr": [1.5, 2.0], "hold_hours": [12, 24], "stop_atr": [1.5]},
+        "Outsized daily moves (> 1.5-2 daily ATRs) partly reverse over the next day.",
+    ),
+    "gotobi_fix_reversal": Family(
+        "gotobi_fix_reversal", gotobi_fix_reversal,
+        {"exit_jst": [12, 15], "stop_atr": [3.0]},
+        "After the 9:55 JST gotobi fix the importer bid disappears and the yen recovers.",
+    ),
 }
 
 
-def generate(family: str, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+def generate(family: str, df: pd.DataFrame, params: dict, symbol: str | None = None) -> tuple[pd.Series, pd.Series]:
+    if family == "home_hours_drift" and symbol:
+        params = {**params, "symbol": symbol}
     return FAMILIES[family].fn(df, **params)

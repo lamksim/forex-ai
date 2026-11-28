@@ -66,3 +66,18 @@ Why it does not pass yet, and the risks:
 2. If it still holds, take the one holdout look for the yen basket (pre-register the config:
    07->09 JST, stop 3 ATR, USDJPY+EURJPY+GBPJPY).
 3. Only then consider a demo forward test next to the USDJPY trend engine (different magic number).
+
+## Batch 2 (same day, same data and costs): four more ideas, all rejected
+| Family | USDJPY | EURUSD | GBPUSD | EURGBP | EURJPY | GBPJPY |
+| --- | --- | --- | --- | --- | --- | --- |
+| home_hours_drift (Ranaldo: currencies weaken in home hours) | +0.08 | -0.31 | -0.60 | -2.98 | -0.90 | -0.84 |
+| asia_reversion (z-score fade, 22-06 UTC only) | -2.28 | -0.56 | -1.11 | -1.85 | -2.04 | -1.96 |
+| daily_reversal (fade > 1.5-2 daily ATR days) | -0.31 | -0.31 | -1.03 | no trades | -0.25 | +0.10 |
+| gotobi_fix_reversal (short yen 10:00 JST to 12/15 JST) | -0.31 | -0.33 | -0.47 | -1.89 | -0.15 | -0.24 |
+
+The home-hours drift is real in gross terms but about 1 pip a day, less than one round trip
+of costs. Asia-session fading pays the wide overnight spread on every trade. Big-day fades
+fire too rarely (14-47 trades) to judge and do not make money. The yen does not reliably
+recover after the gotobi fix. Trials per USD pair are now 80 and per cross 36, which raises
+the bar for every later idea; better data (real crosses, more pairs, realistic spreads) is
+now worth more than more ideas on the same three pairs.
