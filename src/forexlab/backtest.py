@@ -79,6 +79,10 @@ def run_backtest(bars: pd.DataFrame, signal: pd.Series, stop: pd.Series, symbol:
         ah = np.maximum(ah, bh + min_sp)
         al = np.maximum(al, bl + min_sp)
         ac = np.maximum(ac, bc + min_sp)
+    # USD per unit of quote currency, per bar (only crosses need it from the data).
+    qusd = bars["quote_usd"].to_numpy(dtype=float) if "quote_usd" in bars else np.full(len(idx), np.nan)
+    if inst.is_cross and not np.isfinite(qusd).all():
+        raise ValueError(f"{symbol} bars need a complete quote_usd column (see data.synthetic_cross)")
     sig = signal.reindex(idx).fillna(0).astype(int).to_numpy()
     stp = stop.reindex(idx).to_numpy(dtype=float)
 
@@ -87,18 +91,21 @@ def run_backtest(bars: pd.DataFrame, signal: pd.Series, stop: pd.Series, symbol:
     trades: list[dict] = []
     eq = np.empty(len(idx))
 
-    def commission(units: float, price: float) -> float:
-        return inst.notional_usd(units, price) / 100_000 * costs.commission_per_100k_side
+    def usd(amount: float, price: float, i: int) -> float:
+        return inst.to_usd(amount, price, qusd[i])
+
+    def commission(units: float, price: float, i: int) -> float:
+        return inst.notional_usd(units, price, qusd[i]) / 100_000 * costs.commission_per_100k_side
 
     def close(i: int, price: float, reason: str, spread_now: float) -> None:
         nonlocal cash, pos
         pnl_quote = (price - pos["entry"]) * pos["units"] * pos["dir"]
-        pnl = inst.to_usd(pnl_quote, price)
-        comm = commission(pos["units"], price)
+        pnl = usd(pnl_quote, price, i)
+        comm = commission(pos["units"], price, i)
         cash += pnl - comm
         swap = pos["swap"]  # already in cash
-        spread_cost = pos["spread_cost"] + inst.to_usd(spread_now / 2 * pos["units"], price)
-        slip_cost = inst.to_usd(2 * slip * pos["units"], price)
+        spread_cost = pos["spread_cost"] + usd(spread_now / 2 * pos["units"], price, i)
+        slip_cost = usd(2 * slip * pos["units"], price, i)
         trades.append({
             "entry_time": idx[pos["i"]], "exit_time": idx[i], "direction": pos["dir"],
             "entry": pos["entry"], "exit": price, "units": pos["units"],
@@ -129,19 +136,19 @@ def run_backtest(bars: pd.DataFrame, signal: pd.Series, stop: pd.Series, symbol:
         # 2. Entry at the open, sized and approved by the Risk Manager.
         if pos is None and want != 0 and i < len(idx) - 1:
             entry = ao[i] + slip if want > 0 else bo[i] - slip
-            units = risk.size(cash, stp[i - 1], entry, inst)
+            units = risk.size(cash, stp[i - 1], entry, inst, qusd[i])
             if units > 0:
-                c = commission(units, entry)
+                c = commission(units, entry, i)
                 cash -= c
                 pos = {"dir": want, "units": units, "entry": entry,
                        "stop": entry - want * stp[i - 1], "i": i, "commission": c, "swap": 0.0,
-                       "spread_cost": inst.to_usd((ao[i] - bo[i]) / 2 * units, entry)}
+                       "spread_cost": usd((ao[i] - bo[i]) / 2 * units, entry, i)}
 
         # 2b. Overnight financing for positions carried through the rollover.
         if pos is not None and i > pos["i"] and ts.hour == 21 and (costs.swap_long_pips or costs.swap_short_pips):
             pips = costs.swap_long_pips if pos["dir"] > 0 else costs.swap_short_pips
             nights = 3 if ts.weekday() == 2 else 1
-            amount = inst.to_usd(pips * inst.pip * pos["units"] * nights, bo[i])
+            amount = usd(pips * inst.pip * pos["units"] * nights, bo[i], i)
             cash += amount
             pos["swap"] += amount
 
@@ -157,7 +164,7 @@ def run_backtest(bars: pd.DataFrame, signal: pd.Series, stop: pd.Series, symbol:
             if pos is None:
                 return cash
             px = bc[i] if pos["dir"] > 0 else ac[i]
-            return cash + inst.to_usd((px - pos["entry"]) * pos["units"] * pos["dir"], px)
+            return cash + usd((px - pos["entry"]) * pos["units"] * pos["dir"], px, i)
 
         equity_now = mark()
         breach = risk.check(equity_now, ts)

@@ -26,6 +26,10 @@ BAR_COLUMNS = [
     "ask_open", "ask_high", "ask_low", "ask_close", "volume",
 ]
 
+# Carried when present: USD value of one unit of the quote currency, which crosses
+# such as EURGBP need to convert P&L (see synthetic_cross).
+OPTIONAL_COLUMNS = ["quote_usd"]
+
 DUKASCOPY_URL = (
     "https://datafeed.dukascopy.com/datafeed/{symbol}/{y:04d}/{m:02d}/{d:02d}/"
     "{side}_candles_min_1.bi5"
@@ -278,7 +282,8 @@ def load_bars(path: Path) -> pd.DataFrame:
     missing = set(BAR_COLUMNS) - set(df.columns)
     if missing:
         raise ValueError(f"{path} is missing columns {sorted(missing)}")
-    return df[BAR_COLUMNS].sort_index()
+    cols = BAR_COLUMNS + [c for c in OPTIONAL_COLUMNS if c in df.columns]
+    return df[cols].sort_index()
 
 
 def fingerprint(df: pd.DataFrame) -> str:
@@ -299,12 +304,56 @@ def resample(df: pd.DataFrame, rule: str = "1h") -> pd.DataFrame:
         agg[f"{side}_low"] = "min"
         agg[f"{side}_close"] = "last"
     agg["volume"] = "sum"
+    extra = [c for c in OPTIONAL_COLUMNS if c in df.columns]
+    for c in extra:
+        agg[c] = "first"
     out = df.resample(rule, label="left", closed="left").agg(agg)
-    return out.dropna(subset=["bid_open"])[BAR_COLUMNS]
+    return out.dropna(subset=["bid_open"])[BAR_COLUMNS + extra]
 
 
 def mid(df: pd.DataFrame, field: str = "close") -> pd.Series:
     return (df[f"bid_{field}"] + df[f"ask_{field}"]) / 2
+
+
+# --------------------------------------------------------------------------- crosses
+
+def synthetic_cross(cross: str, legs: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Build cross bars (EURGBP, EURJPY, GBPJPY) from the two USD pairs, bar by bar.
+
+    Opens and closes are exact for the shared timestamps, and the cross bid/ask are
+    built from the worse side of each leg (buying EURGBP = buying EURUSD at the ask and
+    selling GBPUSD at the bid), so the synthetic spread is about the sum of the two
+    legs' spreads: wider than a real cross quote. Highs and lows cannot be recovered
+    from H1 legs, so they are bounds (EURGBP high = EURUSD high / GBPUSD low). That
+    overstates the bar range, which makes intrabar stops fire too often. Both biases
+    are against the strategy. Confirm anything promising on real broker cross data.
+    """
+    cross = cross.upper()
+    a, b = legs[f"{cross[:3]}USD"], legs[{"EURGBP": "GBPUSD", "EURJPY": "USDJPY", "GBPJPY": "USDJPY"}[cross]]
+    a, b = a.align(b, join="inner", axis=0)
+    out = pd.DataFrame(index=a.index)
+    if cross == "EURGBP":  # EURUSD / GBPUSD
+        for k in ("open", "close"):
+            out[f"bid_{k}"] = a[f"bid_{k}"] / b[f"ask_{k}"]
+            out[f"ask_{k}"] = a[f"ask_{k}"] / b[f"bid_{k}"]
+        out["bid_high"] = a["bid_high"] / b["ask_low"]
+        out["bid_low"] = a["bid_low"] / b["ask_high"]
+        out["ask_high"] = a["ask_high"] / b["bid_low"]
+        out["ask_low"] = a["ask_low"] / b["bid_high"]
+        out["quote_usd"] = mid(b, "open")
+    elif cross in ("EURJPY", "GBPJPY"):  # XXXUSD * USDJPY
+        for k in ("open", "close", "high", "low"):
+            out[f"bid_{k}"] = a[f"bid_{k}"] * b[f"bid_{k}"]
+            out[f"ask_{k}"] = a[f"ask_{k}"] * b[f"ask_{k}"]
+        out["quote_usd"] = 1.0 / mid(b, "open")
+    else:
+        raise ValueError(f"No synthetic recipe for {cross}")
+    for side in ("bid", "ask"):
+        o, c = out[f"{side}_open"], out[f"{side}_close"]
+        out[f"{side}_high"] = np.maximum(out[f"{side}_high"], np.maximum(o, c))
+        out[f"{side}_low"] = np.minimum(out[f"{side}_low"], np.minimum(o, c))
+    out["volume"] = a["volume"] + b["volume"]
+    return out[BAR_COLUMNS + ["quote_usd"]]
 
 
 # --------------------------------------------------------------------------- synthetic

@@ -78,6 +78,16 @@ def cmd_mt5(args):
               "(today's rates only; use as an approximation via --swap-long/--swap-short)")
 
 
+def cmd_cross(args):
+    legs = {Path(f).name.split("_")[0].upper(): D.load_bars(f) for f in args.legs}
+    df = D.synthetic_cross(args.symbol, legs)
+    out = Path(args.out or f"data/{args.symbol.upper()}_H1_synthetic-cross.csv.gz")
+    D.save_bars(df, out)
+    sp = (df["ask_close"] - df["bid_close"]) / instruments.get(args.symbol).pip
+    print(f"Saved {len(df):,} {args.symbol.upper()} bars {df.index[0]} .. {df.index[-1]} to {out}; "
+          f"median synthetic spread {sp.median():.2f} pips (fingerprint {D.fingerprint(df)})")
+
+
 def cmd_synth(args):
     df = D.synthetic_bars(args.symbol, args.start, args.end, seed=args.seed)
     out = Path(args.out or f"data/{args.symbol}_synthetic_H1.csv.gz")
@@ -158,6 +168,13 @@ def main(argv=None):
     m.add_argument("--utc-offset", type=float, help="Fixed server-minus-UTC offset in hours. Default: New York time + 7 h (UTC+2/+3 with US daylight saving), which MetaQuotes-Demo and most FX brokers use")
     m.add_argument("--out")
     m.set_defaults(fn=cmd_mt5)
+
+    x = sub.add_parser("cross", help="Build EURGBP/EURJPY/GBPJPY bars from two USD-pair bar files")
+    x.add_argument("--symbol", required=True, choices=["EURGBP", "EURJPY", "GBPJPY"])
+    x.add_argument("--legs", nargs=2, required=True, help="The two leg files, named <PAIR>_..., e.g. "
+                   "data/EURUSD_H1_MT5v2_....csv.gz data/GBPUSD_H1_MT5v2_....csv.gz")
+    x.add_argument("--out")
+    x.set_defaults(fn=cmd_cross)
 
     s = sub.add_parser("synth", help="Write a no-edge synthetic dataset for smoke tests")
     s.add_argument("--symbol", default="EURUSD")

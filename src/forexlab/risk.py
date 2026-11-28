@@ -70,12 +70,13 @@ class RiskManager:
     def can_trade(self) -> bool:
         return self.halted_until is None
 
-    def size(self, equity: float, stop_distance: float, price: float, inst: Instrument) -> float:
+    def size(self, equity: float, stop_distance: float, price: float, inst: Instrument,
+             rate: float | None = None) -> float:
         """Units of base currency so that hitting the stop loses risk_per_trade of equity.
         Returns 0 (veto) when the trade is not allowed or the stop is invalid."""
         if not self.can_trade() or not (stop_distance > 0):
             return 0.0
-        loss_per_unit_usd = inst.to_usd(stop_distance, price)
+        loss_per_unit_usd = inst.to_usd(stop_distance, price, rate)
         units = equity * self.limits.risk_per_trade / loss_per_unit_usd
-        max_units = equity * self.limits.max_leverage / inst.notional_usd(1.0, price)
+        max_units = equity * self.limits.max_leverage / inst.notional_usd(1.0, price, rate)
         return float(min(units, max_units))

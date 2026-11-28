@@ -83,7 +83,7 @@ def research(bars: pd.DataFrame, symbol: str, family: str, data_fp: str,
     if not folds:
         raise ValueError(f"Not enough research data for a {train_months}+{test_months} month fold")
 
-    cache = {config_id(family, p): (p, generate(family, bars, p)) for p in fam.configs()}
+    cache = {config_id(family, p): (p, generate(family, bars, p, symbol)) for p in fam.configs()}
     fold_rows, oos_returns, oos_trades, chosen = [], [], [], None
 
     for k, f in enumerate(folds):
@@ -227,7 +227,7 @@ def holdout_evaluation(all_bars: pd.DataFrame, holdout_start: pd.Timestamp, symb
     cid = config_id(family, params)
     vault.open(symbol=symbol, version=version, config_id=cid, data_fingerprint=data_fp,
                reason="final validation after passing research gates")
-    sig, stp = generate(family, all_bars, params)
+    sig, stp = generate(family, all_bars, params, symbol)
     res, m = evaluate(all_bars, sig, stp, symbol, holdout_start, all_bars.index[-1] + pd.Timedelta(seconds=1), costs)
     log.record(run_id=f"holdout-{version}", kind="holdout", symbol=symbol, family=family,
                params=params, data_fingerprint=data_fp,
